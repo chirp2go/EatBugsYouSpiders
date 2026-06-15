@@ -6,7 +6,7 @@ musically, and how to translate human instructions into slicer commands.
 
 ---
 
-## What CRICKET Is
+## What Cricket Is
 
 Cricket is a generative audio collage engine. It takes a song, separates it into 4 stems
 (vocals, melody, bass, drums), analyzes every transient onset in each stem, and stores
