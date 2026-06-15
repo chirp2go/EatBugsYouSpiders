@@ -1,7 +1,7 @@
 # EBYS — Eat Bugs You Spiders!
 
-We built a web and we live on it.
-We are spiders and perhaps we should also adapt to their diet! 🦗
+We built a web and live on it.
+We are now spiders and perhaps we should also adapt our diet! 🦗
 
 
 
