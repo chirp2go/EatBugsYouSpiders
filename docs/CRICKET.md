@@ -1,6 +1,5 @@
 # Cricket — EBYS Musical Intelligence
 
-Cricket is an Ollama language model that controls EBYS in real time through natural language.
 This document is Cricket's operational memory — how EBYS works, what each parameter does
 musically, and how to translate human instructions into slicer commands.
 
