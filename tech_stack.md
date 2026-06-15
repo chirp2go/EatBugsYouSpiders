@@ -34,10 +34,6 @@ Extended with community dictionaries: inuktitut, ojibwe, zulu.
 **Pure Data** (migrating from Max/MSP)
 Open source. AGPL-3.0 compatible.
 
-## Web Interface
-**HTML / CSS**
-Zero-CSS base. Skin system: one skin = one CSS file, user-created and shareable.
-
 ## License
 **AGPL-3.0**
 Copyleft. Covers network use. Code must stay open even when deployed as a service.
