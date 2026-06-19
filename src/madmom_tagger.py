@@ -56,6 +56,39 @@ import json
 import argparse
 import numpy as np
 
+# ── NumPy compatibility shim for madmom ───────────────────────────────────────
+# madmom was written against numpy <1.24.  Two breaking changes affect it:
+#
+# 1. np.float / np.int / np.bool etc. were removed in 1.24.
+#    Fix: restore them as aliases for Python builtins.
+#
+# 2. np.asarray() on inhomogeneous sequences now raises ValueError instead of
+#    silently creating an object array.  madmom's DBNDownBeatTrackingProcessor
+#    does np.asarray(results)[:, 1] where results is a list of variable-length
+#    arrays.  Fix: wrap np.asarray to fall back to dtype=object on ValueError.
+#
+# Both patches live here so they apply before ANY madmom import.
+
+import numpy as _np_module  # alias so the patch closure can reference it
+
+# Patch 1 — removed type aliases
+for _alias, _builtin in [('float', float), ('int', int), ('complex', complex),
+                          ('bool', bool), ('object', object), ('str', str)]:
+    if not hasattr(_np_module, _alias):
+        setattr(_np_module, _alias, _builtin)
+
+# Patch 2 — inhomogeneous asarray
+_orig_asarray = _np_module.asarray
+def _compat_asarray(a, dtype=None, order=None, **kwargs):
+    try:
+        return _orig_asarray(a, dtype=dtype, order=order, **kwargs)
+    except ValueError:
+        # Inhomogeneous sequence — numpy <1.24 silently made an object array
+        return _orig_asarray(a, dtype=object)
+_np_module.asarray = _compat_asarray
+# np is already imported above; re-bind so local uses also see the patch
+np = _np_module
+
 
 # ── File helpers ──────────────────────────────────────────────────────────────
 
@@ -73,10 +106,14 @@ def find_original_mix(stems_folder):
     parent       = os.path.dirname(stems_folder)   # e.g. stems/htdemucs/
 
     search_dirs = [
-        parent,
+        # Prefer WAV in temp/ — madmom/soundfile cannot read MP4/AAC.
+        # ffmpeg converts MP4 → WAV in temp/ before Demucs runs, so it's always there.
+        os.path.join(parent, '..', '..', 'temp'),    # EBYS_INFRA/temp  (ffmpeg WAV)
+        os.path.join(parent, '..', 'temp'),          # stems/temp  (alternate)
+        os.path.join(parent, '..', '..', 'raw_uploads'),  # EBYS_INFRA/raw_uploads (MP4 fallback)
         os.path.join(parent, '..', 'raw_uploads'),
+        parent,
         os.path.join(parent, '..'),
-        os.path.join(parent, '..', '..', 'raw_uploads'),
         os.path.join(parent, '..', '..'),
         stems_folder,
     ]
@@ -265,6 +302,7 @@ def main():
             print(f'WARN: could not load {out_path}: {e}', file=sys.stderr)
 
     # ── Analyse ───────────────────────────────────────────────────────────────
+    newly_analyzed = []
     for mix_path, track_name in jobs:
         print(f'\n→ {track_name}', file=sys.stderr)
         print(f'  mix: {mix_path}', file=sys.stderr)
@@ -272,18 +310,26 @@ def main():
             info = analyze_file(mix_path, beats_per_bar=args.beats_per_bar)
         except Exception as e:
             print(f'  ERROR: {e}', file=sys.stderr)
+            import traceback; traceback.print_exc(file=sys.stderr)
             info = None
 
         if info:
             results[track_name] = info
+            newly_analyzed.append(track_name)
+        else:
+            print(f'  WARN: no result for "{track_name}" — will not be written', file=sys.stderr)
 
     # ── Output ────────────────────────────────────────────────────────────────
+    if not newly_analyzed:
+        print('\nWARN: 0 tracks successfully analyzed — downbeats.json not updated', file=sys.stderr)
+        sys.exit(1)
+
     output = json.dumps(results, indent=2, ensure_ascii=False)
 
     if out_path:
         with open(out_path, 'w') as f:
             f.write(output)
-        print(f'\nSaved → {out_path}', file=sys.stderr)
+        print(f'\nSaved → {out_path}  ({len(newly_analyzed)} track(s): {newly_analyzed})', file=sys.stderr)
     else:
         print(output)
 

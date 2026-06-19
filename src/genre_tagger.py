@@ -98,26 +98,32 @@ def find_original_mix(stems_folder):
     """
     track_name = os.path.basename(stems_folder.rstrip('/'))
 
-    # Look in common locations relative to the stems folder
+    # temp/ WAV is preferred — essentia MonoLoader reads wav natively without
+    # needing ffmpeg in its subprocess PATH. mp4/m4a require ffmpeg which may
+    # not be visible to essentia's internal loader even when it's in PATH.
     search_roots = [
-        os.path.join(stems_folder, '..', '..', '..', 'raw_uploads'),  # EBYS_INFRA/raw_uploads
-        os.path.join(stems_folder, '..', '..', '..'),  # EBYS_INFRA/
+        os.path.join(stems_folder, '..', '..', '..', 'temp'),        # EBYS_INFRA/temp (wav)
+        os.path.join(stems_folder, '..', '..', '..', 'raw_uploads'), # EBYS_INFRA/raw_uploads
+        os.path.join(stems_folder, '..', '..', '..'),
         os.path.join(stems_folder, '..', '..', '..', 'originals'),
         os.path.join(stems_folder, '..', '..', '..', 'tracks'),
         os.path.join(stems_folder, '..', '..', '..', 'music'),
         os.path.expanduser('~/Music'),
         os.path.expanduser('~/Downloads'),
     ]
-    exts = ['.mp3', '.wav', '.flac', '.aiff', '.aif', '.m4a', '.ogg', '.mp4']
+    # wav/flac/aiff first — formats essentia can read without ffmpeg
+    exts_preferred = ['.wav', '.flac', '.aiff', '.aif']
+    exts_fallback  = ['.mp3', '.m4a', '.ogg', '.mp4']
 
-    for root in search_roots:
-        root = os.path.normpath(root)
-        if not os.path.isdir(root):
-            continue
-        for fname in os.listdir(root):
-            name_no_ext, ext = os.path.splitext(fname)
-            if ext.lower() in exts and name_no_ext == track_name:
-                return os.path.join(root, fname)
+    for ext_list in (exts_preferred, exts_fallback):
+        for root in search_roots:
+            root = os.path.normpath(root)
+            if not os.path.isdir(root):
+                continue
+            for fname in os.listdir(root):
+                name_no_ext, ext = os.path.splitext(fname)
+                if ext.lower() in ext_list and name_no_ext == track_name:
+                    return os.path.join(root, fname)
 
     return None
 

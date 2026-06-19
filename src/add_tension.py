@@ -22,8 +22,8 @@ DOWNBEATS_PATH = os.path.join(os.path.dirname(__file__), 'downbeats.json')
 WINDOW         = 4   # number of bars in the slope window (half = floor(w/2))
 
 # Stem suffixes to strip when matching analysis track → downbeats track
-STEM_SUFFIXES = ['_vocals.wav', '_melody.wav', '_bass.wav', '_drums.wav',
-                 '_vocals',     '_melody',     '_bass',     '_drums']
+STEM_SUFFIXES = ['_vocals.wav', '_melody.wav', '_bass.wav', '_drums.wav', '_other.wav',
+                 '_vocals',     '_melody',     '_bass',     '_drums',     '_other']
 
 DESCRIPTORS = ['C', 'E', 'F', 'P', 'H', 'T']
 
@@ -153,11 +153,9 @@ def main():
         elif not a.startswith('--'):
             filter_name = a.lower()
 
-    print(f'Loading analysis library from {ANALYSIS_PATH}')
     with open(ANALYSIS_PATH) as f:
         lib = json.load(f)
 
-    print(f'Loading downbeats from {DOWNBEATS_PATH}')
     with open(DOWNBEATS_PATH) as f:
         beats_db = json.load(f)
 
@@ -166,43 +164,55 @@ def main():
         track_keys = [k for k in track_keys if filter_name in k.lower()]
         print(f'Filtering to {len(track_keys)} matching track(s)')
 
-    changed = 0
-    for track_key in track_keys:
-        base_name = strip_stem_suffix(track_key)
+    SHORT = {'vocals': 'vocals', 'melody': 'melo', 'bass': 'bass', 'drums': 'drums'}
 
-        # Find matching downbeats entry (exact or partial)
+    # Group stem keys by base track name so we print one header per track
+    from collections import OrderedDict
+    groups = OrderedDict()
+    for tk in track_keys:
+        bn = strip_stem_suffix(tk)
+        groups.setdefault(bn, []).append(tk)
+
+    changed = 0
+    for base_name, stem_keys in groups.items():
+        # Find downbeats entry
         beats_entry = beats_db.get(base_name)
         if beats_entry is None:
-            # Try partial match
             for bk in beats_db:
                 if base_name in bk or bk in base_name:
                     beats_entry = beats_db[bk]
                     break
         if beats_entry is None:
-            print(f'  ⚠  no downbeats found for "{base_name}" — skipping')
+            print(f'⚠  no downbeats for "{base_name}" — skipping')
             continue
 
         downbeats_ms = beats_entry.get('downbeats_ms', [])
-        print(f'\n{track_key}  ({len(downbeats_ms)} bars, window={w})')
+        stem_parts = []
 
-        track_data = lib[track_key]
-        for stem_name, stem_data in track_data.items():
-            slices_dict = stem_data.get('slices', {})
-            metadata    = stem_data.get('metadata', {})
-            if not slices_dict:
-                continue
-            print(f'  [{stem_name}]  {len(slices_dict)} slices')
-            process_stem(slices_dict, metadata, downbeats_ms, w)
-            changed += 1
+        for track_key in stem_keys:
+            track_data = lib[track_key]
+            for stem_name, stem_data in track_data.items():
+                slices_dict = stem_data.get('slices', {})
+                metadata    = stem_data.get('metadata', {})
+                if not slices_dict:
+                    continue
+                process_stem(slices_dict, metadata, downbeats_ms, w)
+                label = SHORT.get(stem_name, stem_name)
+                stem_parts.append(f'[{label}] {len(slices_dict)} slices')
+                changed += 1
+
+        if stem_parts:
+            hdr = base_name[:28] + ('…' if len(base_name) > 28 else '')
+            print(f'{hdr}  ({len(downbeats_ms)} bars, window={w})')
+            print('  ' + '  '.join(stem_parts))
+            print()
 
     if changed == 0:
         print('\nNothing processed — check track name filter or downbeats.json coverage.')
         return
 
-    print(f'\nSaving {ANALYSIS_PATH} ...')
     with open(ANALYSIS_PATH, 'w') as f:
         json.dump(lib, f)
-    print(f'Done. tension_C/E/F/P/H/T written to all slices.')
 
 if __name__ == '__main__':
     main()
