@@ -27,11 +27,13 @@ autowatch = 1;
 inlets    = 3;
 outlets   = 12;
 
+// play_* = playback buffers (loaded by track_loader.js).
+// stem_* = analysis buffers (loaded by analyze_reader.js) — do NOT reference those here.
 var STEM_CFG = {
-    vocals: { src: 'stem_vocals', idx: 0 },
-    melody: { src: 'stem_melo',   idx: 1 },
-    bass:   { src: 'stem_bass',   idx: 2 },
-    drums:  { src: 'stem_drum',   idx: 3 },
+    vocals: { src: 'play_vocals', idx: 0 },
+    melody: { src: 'play_melo',   idx: 1 },
+    bass:   { src: 'play_bass',   idx: 2 },
+    drums:  { src: 'play_drums',  idx: 3 },
 };
 
 // Per-stem pending state while async processing runs

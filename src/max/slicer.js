@@ -29,14 +29,41 @@
 //   reset                   — clear index, stop
 //
 // ── Outlets ───────────────────────────────────────────────────────────────────
-//   0  playback trigger  → list: track  start_ms  dur_ms
-//   1  status strings
-//   2  descriptor dump
-//   3  query result count
+//   0  playback trigger  → list: track  startFrac  endFrac  stretchRatio
+//        track        = "vocals" | "melody" | "bass" | "drums"
+//        startFrac    = 0–1 fraction of buffer length
+//                       multiply by buffer samps to get karma~ seek position
+//        endFrac      = 0–1 fraction; segment ends here
+//        stretchRatio = srcBPM / globalBPM  (1.0 when no global BPM override)
+//   1  status / metadata — first word is the tag:
+//        ready N                                        — index ready, N total slices
+//        slices Nv Nm Nb Nd                             — per-stem slice counts (vocals melody bass drums)
+//        track_name name                                — cleaned source track name
+//        need_stemDurs                                  — ask Max to resend setStemDurMs for all stems
+//        desc track C E F P H T tC tE tF tP tH tT      — current slice descriptors + tensions
+//        slice_ms track ms                              — absolute playback position in ms
+//        stemTrack track name                           — source file name for this stem
+//        seg track id dur bars startFrac endFrac        — segment summary (human-readable)
+//        stopped                                        — transport halted via stop()
+//        reset                                          — index cleared via reset()
+//        index_empty                                    — start() called with no index built
+//        empty_pool track                               — selectSegment() found zero candidates
+//        loop track bars locked                         — stem locked to looping segment
+//        unloop track | "all"                           — loop released
+//        globalBPM N                                    — global BPM override active
+//        segmentBars track N                            — segment length updated
+//        stayProb track N                               — stay probability updated
+//        quantize 0|1                                   — bar-snap on/off
+//        umapDone                                       — umap_coords.json written (Node t-SNE)
+//   2  descriptor dump (from dumpDescriptors)
+//        → list: track  id  n  C  P  E  F  startTime  dur
+//   3  query result count (from selectRange)  → int: N matching slices
+//   4  → fluid.dataset~ ebys.descriptors      — sends "read <fname>" to load per-stem descriptor data
+//   5  → fluid.umap~                           — sends "fit ebys.descriptors ebys.umap" to run UMAP
 
 autowatch = 1;
-inlets    = 1;
-outlets   = 4;
+inlets    = 3;   // 0 = commands, 1 = fluid.dataset~ ebys.umap dump, 2 = fluid.dataset~ ebys.descriptors read-done
+outlets   = 6;   // outlet 4 = fluid.dataset~ ebys.descriptors, outlet 5 = fluid.umap~
 
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
 var TRACKS                 = ["vocals", "melody", "bass", "drums"];
@@ -64,6 +91,12 @@ var MAX_SLICES_PER_STEM = 0; // 0 = unlimited; set via :setMaxSlices N to cap fo
 // info~ stem_vocals → [* 1000] → prepend setStemDurMs vocals → js slicer.js
 // Without these, slice.time fractions can't be compared to barMs (ms).
 var stemDurMs = { vocals: 0, melody: 0, bass: 0, drums: 0 };
+
+// ── SLOT MAP ──────────────────────────────────────────────────────────────────
+// Maps source track name → slot index (0-based, alphabetical).
+// Populated by buildIndex(); used to embed slot in outlet 0 messages.
+// track_loader.js uses the same alphabetical sort, so slot 0 here = slot 0 there.
+var slotMap = {};  // { "439 ISMT": 0, "DREPTO CE3o": 1, … }
 
 function setStemDurMs(track, ms) {
     if (stemDurMs.hasOwnProperty(track)) {
@@ -95,7 +128,8 @@ var lastIdx      = { vocals: 0, melody: 0, bass: 0, drums: 0 };
 // ── PER-STEM LOOP STATE ───────────────────────────────────────────────────────
 // loopState[track] = { bars: N, startIdx: i, startTime: fraction, endTime: fraction }
 // When set, next() replays the same segment instead of selecting a new one.
-var loopState = { vocals: null, melody: null, bass: null, drums: null };
+var loopState  = { vocals: null, melody: null, bass: null, drums: null };
+var loopCycles = { vocals: 0,    melody: 0,    bass: 0,    drums: 0    }; // unique id per loop cycle
 
 // ── PLAYBACK STATE ────────────────────────────────────────────────────────────
 var running   = false;
@@ -126,136 +160,248 @@ function pad(n, width) {
 }
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
+// Returns the clean source track name for a stem (strips stem suffix from filename).
+// Future multi-track: meta[stem].track_name will differ per stem.
+function cleanTrackName(stem) {
+    var raw = (meta[stem] && meta[stem].track_name) ? String(meta[stem].track_name) : "";
+    return raw.replace(/_(vocals|melody|bass|drums|other|melo)(\.\w+)?$/i, "").trim();
+}
+
 // ── BUILD INDEX ───────────────────────────────────────────────────────────────
+// Read library directly from JSON file (bypasses unreliable deep-nested dict.get()
+// which fails at 4+ levels of :: nesting in Max's JS Dict API).
+function getLibraryPath() {
+    // Use a bare filename — Max resolves it relative to the patcher folder,
+    // same as INDEX_FILE ("ebys_index.json") and "../downbeats.json".
+    return "analysis_library.json";
+}
+
 function buildIndex() {
     idx     = [];
     byTrack = {};
     meta    = {};
     ranges  = {};
+    slotMap = {};
 
-    var d = new Dict(DICT_NAME);
+    // ws_server.js (Node) pre-reads analysis_library.json and calls Max.setDict('_ebysLib_', data)
+    // before forwarding the buildIndex message here — so the dict is already populated.
+    var d = new Dict("_ebysLib_");
+
     var topKeys = d.getkeys();
-    if (!topKeys || topKeys.length === 0) {
-        post("EBYS slicer: dict '" + DICT_NAME + "' is empty — no analysis yet\n");
+    if (!topKeys || !topKeys.length) {
+        post("EBYS Slicer: analysis library is empty — run analysis first\n");
         return;
     }
 
-    // dict analysisLib is keyed by stem filename (e.g. "track_vocals.wav").
-    // Find which filename belongs to each stem by matching the suffix.
-    var STEM_SUFFIXES = {
-        vocals: "_vocals.wav",
-        melody: "_other.wav",   // htdemucs calls it "other"
-        bass:   "_bass.wav",
-        drums:  "_drums.wav"
-    };
-    var stemFile = {};
+    // ── 1. Map every library filename to its stem type and source track name ──────
+    // Filenames look like "DREPTO CE3o_vocals.wav" or "439iSMT_other.wav".
+    // Canonical stem type keys are: vocals / melody / bass / drums.
+    var SUFFIX_TO_STEM = {};
+    SUFFIX_TO_STEM["_vocals.wav"] = "vocals";
+    SUFFIX_TO_STEM["_drums.wav"]  = "drums";
+    SUFFIX_TO_STEM["_bass.wav"]   = "bass";
+    SUFFIX_TO_STEM["_other.wav"]  = "melody";
+    SUFFIX_TO_STEM["_melo.wav"]   = "melody";
+
+    // Inner dict key → canonical stem type (library stores "melo" instead of "melody" sometimes)
+    var INNER_TO_STEM = {};
+    INNER_TO_STEM["vocals"] = "vocals";
+    INNER_TO_STEM["melody"] = "melody";
+    INNER_TO_STEM["melo"]   = "melody";
+    INNER_TO_STEM["bass"]   = "bass";
+    INNER_TO_STEM["drums"]  = "drums";
+
+    // trackStemFiles[sourceName][stemType] = library top-level key (filename)
+    var trackStemFiles = {};
+
     for (var ki = 0; ki < topKeys.length; ki++) {
-        var kl = String(topKeys[ki]).toLowerCase();
-        for (var s in STEM_SUFFIXES) {
-            if (kl.indexOf(STEM_SUFFIXES[s]) !== -1) { stemFile[s] = String(topKeys[ki]); break; }
+        var key = String(topKeys[ki]);
+        var kl  = key.toLowerCase();
+        for (var suf in SUFFIX_TO_STEM) {
+            var idx_suf = kl.lastIndexOf(suf);
+            if (idx_suf !== -1) {
+                var stemType   = SUFFIX_TO_STEM[suf];
+                var sourceName = key.substring(0, idx_suf).replace(/[_\-]+$/, "").trim();
+                if (!trackStemFiles[sourceName]) trackStemFiles[sourceName] = {};
+                trackStemFiles[sourceName][stemType] = key;
+                break;
+            }
         }
     }
 
+    // ── 2. Sort source tracks alphabetically → assign slot numbers ───────────────
+    var sourceNames = [];
+    for (var tn in trackStemFiles) sourceNames.push(tn);
+    sourceNames.sort();
+
+    for (var si = 0; si < sourceNames.length; si++) {
+        slotMap[sourceNames[si]] = si;
+    }
+    post("EBYS Slicer: " + sourceNames.length + " source track(s): "
+         + sourceNames.map(function(n, i){ return i + "=" + n; }).join(", ") + "\n");
+
+    // Initialise per-stem arrays
+    for (var t = 0; t < TRACKS.length; t++) {
+        byTrack[TRACKS[t]] = [];
+        meta[TRACKS[t]]    = { BPM: 0, BPM_confidence: 0, key: "", track_name: "" };
+    }
+
+    // ── 3. Load slices from every source track / stem combination ────────────────
+    for (var ti = 0; ti < sourceNames.length; ti++) {
+        var sourceName = sourceNames[ti];
+        var slot       = slotMap[sourceName];
+        var files      = trackStemFiles[sourceName];
+
+        for (var t = 0; t < TRACKS.length; t++) {
+            var track    = TRACKS[t];
+            var filename = files[track];
+            if (!filename) continue;  // this source track has no analysis for this stem
+
+            var fileDict = d.get(filename);
+            if (!fileDict || typeof fileDict.get !== "function") continue;
+
+            // Inner dict key might be "melody", "melo", "vocals", etc.
+            var stemDict = null;
+            var tryKeys  = [track, "melo", "melody", "vocals", "drums", "bass"];
+            for (var tk = 0; tk < tryKeys.length; tk++) {
+                var candidate = fileDict.get(tryKeys[tk]);
+                if (candidate && typeof candidate.get === "function") {
+                    if (INNER_TO_STEM[tryKeys[tk]] === track || tryKeys[tk] === track) {
+                        stemDict = candidate; break;
+                    }
+                }
+            }
+            // Fallback: try any key whose canonical name matches the track
+            if (!stemDict) {
+                var innerKeys = fileDict.getkeys ? fileDict.getkeys() : [];
+                for (var ik = 0; ik < innerKeys.length; ik++) {
+                    var ik_str = String(innerKeys[ik]);
+                    if (INNER_TO_STEM[ik_str] === track) {
+                        stemDict = fileDict.get(ik_str);
+                        if (stemDict && typeof stemDict.get === "function") break;
+                        stemDict = null;
+                    }
+                }
+            }
+            if (!stemDict) continue;
+
+            var metaDict = stemDict.get("metadata");
+            var BPM  = metaDict ? (parseFloat(metaDict.get("BPM"))            || 0) : 0;
+            var BPMc = metaDict ? (parseFloat(metaDict.get("BPM_confidence")) || 0) : 0;
+            var mkey = metaDict ? String(metaDict.get("key")        || "")          : "";
+            var tname= metaDict ? String(metaDict.get("track_name") || "")          : "";
+            var durMs= metaDict ? (parseFloat(metaDict.get("stemDurMs"))      || 0) : 0;
+
+            // Keep meta for this stem from the LAST source track that has data for it
+            meta[track] = { BPM: BPM, BPM_confidence: BPMc, key: mkey, track_name: tname };
+            if (durMs > 0) stemDurMs[track] = durMs;
+
+            var slicesDict = stemDict.get("slices");
+            if (!slicesDict || typeof slicesDict.getkeys !== "function") continue;
+
+            var sliceKeys = slicesDict.getkeys();
+            sliceKeys.sort();
+
+            // Temporary array for slices belonging to this source-track/stem pair.
+            // dur, end-descriptors, and T are computed within this sub-array so they
+            // stay coherent (no cross-track neighbour calculations).
+            var sub = [];
+
+            for (var sk = 0; sk < sliceKeys.length; sk++) {
+                var id = sliceKeys[sk];
+                if (String(id).indexOf("slice_") !== 0) continue;
+                var n  = parseInt(String(id).replace("slice_", "")) || 0;
+
+                var sd = slicesDict.get(id);
+                if (!sd || typeof sd.get !== "function") continue;
+
+                var tval = function(k) {
+                    var v = sd.get(k);
+                    return (v === null || v === undefined || v === "") ? null : parseFloat(v);
+                };
+                var slice = {
+                    track      : track,
+                    sourceTrack: sourceName,
+                    slot       : slot,
+                    stemDurMs  : durMs,
+                    id: id, n: n,
+                    time: parseFloat(sd.get("time")) || 0,
+                    C   : parseFloat(sd.get("C"))    || 0,
+                    P   : parseFloat(sd.get("P"))    || 0,
+                    E   : parseFloat(sd.get("E"))    || -60,
+                    F   : parseFloat(sd.get("F"))    || 0,
+                    H   : parseFloat(sd.get("H"))    || 0,
+                    M0  : parseFloat(sd.get("M0"))   || 0,
+                    M1  : parseFloat(sd.get("M1"))   || 0,
+                    M2  : parseFloat(sd.get("M2"))   || 0,
+                    M3  : parseFloat(sd.get("M3"))   || 0,
+                    M4  : parseFloat(sd.get("M4"))   || 0,
+                    M5  : parseFloat(sd.get("M5"))   || 0,
+                    tension_C: tval("tension_C"), tension_E: tval("tension_E"), tension_F: tval("tension_F"),
+                    tension_P: tval("tension_P"), tension_H: tval("tension_H"), tension_T: tval("tension_T"),
+                    BPM: BPM, key: mkey, dur: LAST_SLICE_DEFAULT_DUR
+                };
+                sub.push(slice);
+            }
+
+            // ── Per-source-track post-processing ──────────────────────────────────
+            // Infer dur from successive start times WITHIN this source track
+            for (var i = 0; i < sub.length - 1; i++) {
+                sub[i].dur = sub[i + 1].time - sub[i].time;
+            }
+
+            // Compute T and end-descriptors within this source track
+            for (var i = 0; i < sub.length; i++) {
+                var m1=sub[i].M1, m2=sub[i].M2, m3=sub[i].M3, m4=sub[i].M4, m5=sub[i].M5;
+                sub[i].T = Math.sqrt((m1*m1 + m2*m2 + m3*m3 + m4*m4 + m5*m5) / 5.0);
+            }
+            for (var i = 0; i < sub.length - 1; i++) {
+                sub[i].endC = sub[i+1].C;  sub[i].deltaC = sub[i+1].C - sub[i].C;
+                sub[i].endE = sub[i+1].E;  sub[i].deltaE = sub[i+1].E - sub[i].E;
+                sub[i].endF = sub[i+1].F;  sub[i].deltaF = sub[i+1].F - sub[i].F;
+                sub[i].endP = sub[i+1].P;  sub[i].deltaP = sub[i+1].P - sub[i].P;
+                sub[i].endH = sub[i+1].H;  sub[i].deltaH = sub[i+1].H - sub[i].H;
+                sub[i].endT = sub[i+1].T;  sub[i].deltaT = sub[i+1].T - sub[i].T;
+            }
+            if (sub.length > 0) {
+                var last = sub[sub.length - 1];
+                last.endC=last.C; last.endE=last.E; last.endF=last.F;
+                last.endP=last.P; last.endH=last.H; last.endT=last.T;
+                last.deltaC=0; last.deltaE=0; last.deltaF=0;
+                last.deltaP=0; last.deltaH=0; last.deltaT=0;
+            }
+
+            // Append to global byTrack array for this stem (slices from all source tracks)
+            for (var i = 0; i < sub.length; i++) {
+                byTrack[track].push(sub[i]);
+                idx.push(sub[i]);
+            }
+
+            post("EBYS Slicer [" + track + "/" + sourceName + " slot=" + slot + "]: "
+                 + sub.length + " slices  BPM=" + BPM.toFixed(1)
+                 + "  stemDurMs=" + (durMs/1000).toFixed(2) + "s\n");
+        }
+    }
+
+    // ── 4. Cap slice counts, compute ranges ──────────────────────────────────────
     for (var t = 0; t < TRACKS.length; t++) {
         var track = TRACKS[t];
-        // prefix = "filename::" so all dict paths resolve inside the right sub-dict
-        var prefix = stemFile[track] ? stemFile[track] + "::" : "";
-        byTrack[track] = [];
+        var arr   = byTrack[track];
 
-        meta[track] = {
-            BPM:            parseFloat(d.get(prefix + track + "::metadata::BPM"))            || 0,
-            BPM_confidence: parseFloat(d.get(prefix + track + "::metadata::BPM_confidence")) || 0,
-            key:            String(d.get(prefix + track + "::metadata::key")                 || ""),
-            track_name:     String(d.get(prefix + track + "::metadata::track_name")          || "")
-        };
-
-        // Restore stem duration from library so playback works on fresh open
-        // (buffers are empty until audio is loaded — no need to wait for info~)
-        var storedDurMs = parseFloat(d.get(prefix + track + "::metadata::stemDurMs")) || 0;
-        if (storedDurMs > 0) {
-            stemDurMs[track] = storedDurMs;
-            post("EBYS Slicer: stemDurMs[" + track + "] = "
-                 + (storedDurMs / 1000).toFixed(2) + "s (from library)\n");
-        }
-
-        var n = 1;
-        while (true) {
-            var id   = "slice_" + pad(n, 4);
-            var base = prefix + track + "::slices::" + id + "::";
-            if (!d.contains(base + "time")) break;
-            var t_ms = d.get(base + "time");
-
-            var slice = {
-                track : track,
-                id    : id,
-                n     : n,
-                time  : parseFloat(t_ms),
-                C     : parseFloat(d.get(base + "C"))  || 0,
-                P     : parseFloat(d.get(base + "P"))  || 0,
-                E     : parseFloat(d.get(base + "E"))  || -60,
-                F     : parseFloat(d.get(base + "F"))  || 0,
-                H     : parseFloat(d.get(base + "H"))  || 0,
-                M0    : parseFloat(d.get(base + "M0")) || 0,
-                M1    : parseFloat(d.get(base + "M1")) || 0,
-                M2    : parseFloat(d.get(base + "M2")) || 0,
-                M3    : parseFloat(d.get(base + "M3")) || 0,
-                M4    : parseFloat(d.get(base + "M4")) || 0,
-                M5    : parseFloat(d.get(base + "M5")) || 0,
-                BPM   : meta[track].BPM,
-                key   : meta[track].key,
-                dur   : LAST_SLICE_DEFAULT_DUR
-            };
-            byTrack[track].push(slice);
-            idx.push(slice);
-            n++;
-        }
-
-        // Cap slice count if MAX_SLICES_PER_STEM is set
-        if (MAX_SLICES_PER_STEM > 0 && byTrack[track].length > MAX_SLICES_PER_STEM) {
-            var step = byTrack[track].length / MAX_SLICES_PER_STEM;
+        if (MAX_SLICES_PER_STEM > 0 && arr.length > MAX_SLICES_PER_STEM) {
+            var step = arr.length / MAX_SLICES_PER_STEM;
             var sampled = [];
             for (var si = 0; si < MAX_SLICES_PER_STEM; si++) {
-                sampled.push(byTrack[track][Math.round(si * step)]);
+                sampled.push(arr[Math.round(si * step)]);
             }
-            byTrack[track] = sampled;
-        }
-
-        // Infer duration from successive start times
-        var arr = byTrack[track];
-        for (var i = 0; i < arr.length - 1; i++) {
-            arr[i].dur = arr[i + 1].time - arr[i].time;
-        }
-
-        // Compute end-descriptors and deltas for transition matching.
-        // end* = descriptor at the start of the NEXT slice (= approximate end of this one).
-        // delta* = direction of change (positive = rising, negative = falling).
-        // T = RMS of MFCC1–M5 (timbral complexity; M0 is energy-correlated so excluded).
-        for (var i = 0; i < arr.length; i++) {
-            var m1 = arr[i].M1, m2 = arr[i].M2, m3 = arr[i].M3;
-            var m4 = arr[i].M4, m5 = arr[i].M5;
-            arr[i].T = Math.sqrt((m1*m1 + m2*m2 + m3*m3 + m4*m4 + m5*m5) / 5.0);
-        }
-        for (var i = 0; i < arr.length - 1; i++) {
-            arr[i].endC = arr[i+1].C;  arr[i].deltaC = arr[i+1].C - arr[i].C;
-            arr[i].endE = arr[i+1].E;  arr[i].deltaE = arr[i+1].E - arr[i].E;
-            arr[i].endF = arr[i+1].F;  arr[i].deltaF = arr[i+1].F - arr[i].F;
-            arr[i].endP = arr[i+1].P;  arr[i].deltaP = arr[i+1].P - arr[i].P;
-            arr[i].endH = arr[i+1].H;  arr[i].deltaH = arr[i+1].H - arr[i].H;
-            arr[i].endT = arr[i+1].T;  arr[i].deltaT = arr[i+1].T - arr[i].T;
-        }
-        if (arr.length > 0) {
-            var last = arr[arr.length - 1];
-            last.endC = last.C; last.endE = last.E;
-            last.endF = last.F; last.endP = last.P;
-            last.endH = last.H; last.endT = last.T;
-            last.deltaC = 0; last.deltaE = 0; last.deltaF = 0; last.deltaP = 0;
-            last.deltaH = 0; last.deltaT = 0;
+            byTrack[track] = arr = sampled;
         }
 
         if (arr.length === 0) { ranges[track] = {}; continue; }
 
         var rC={min:Infinity,max:-Infinity}, rP={min:Infinity,max:-Infinity};
         var rE={min:Infinity,max:-Infinity}, rF={min:Infinity,max:-Infinity};
+        var rH={min:Infinity,max:-Infinity}, rT={min:Infinity,max:-Infinity};
         var rDur={min:Infinity,max:-Infinity};
         for (var i = 0; i < arr.length; i++) {
             var s = arr[i];
@@ -263,33 +409,18 @@ function buildIndex() {
             if (s.P<rP.min)rP.min=s.P; if(s.P>rP.max)rP.max=s.P;
             if (s.E<rE.min)rE.min=s.E; if(s.E>rE.max)rE.max=s.E;
             if (s.F<rF.min)rF.min=s.F; if(s.F>rF.max)rF.max=s.F;
+            if (s.H<rH.min)rH.min=s.H; if(s.H>rH.max)rH.max=s.H;
+            if (s.T<rT.min)rT.min=s.T; if(s.T>rT.max)rT.max=s.T;
             if (s.dur<rDur.min)rDur.min=s.dur; if(s.dur>rDur.max)rDur.max=s.dur;
         }
-        ranges[track] = { C:rC, P:rP, E:rE, F:rF, dur:rDur };
+        ranges[track] = { C:rC, P:rP, E:rE, F:rF, H:rH, T:rT, dur:rDur };
 
-        // Compute H and T ranges
-        var rH={min:Infinity,max:-Infinity}, rT={min:Infinity,max:-Infinity};
-        for (var i = 0; i < arr.length; i++) {
-            if (arr[i].H < rH.min) rH.min = arr[i].H; if (arr[i].H > rH.max) rH.max = arr[i].H;
-            if (arr[i].T < rT.min) rT.min = arr[i].T; if (arr[i].T > rT.max) rT.max = arr[i].T;
-        }
-        ranges[track].H = rH;
-        ranges[track].T = rT;
-
-        // Update global normalisation ranges across all tracks
         if (rC.max > rC.min) norm.C = Math.max(norm.C, rC.max - rC.min);
         if (rE.max > rE.min) norm.E = Math.max(norm.E, rE.max - rE.min);
         if (rF.max > rF.min) norm.F = Math.max(norm.F, rF.max - rF.min);
         if (rP.max > rP.min) norm.P = Math.max(norm.P, rP.max - rP.min);
         if (rH.max > rH.min) norm.H = Math.max(norm.H, rH.max - rH.min);
         if (rT.max > rT.min) norm.T = Math.max(norm.T, rT.max - rT.min);
-
-        var bpm = meta[track].BPM || FALLBACK_BPM;
-        post("EBYS Slicer [" + track + "]: " + arr.length + " slices"
-             + "  BPM=" + bpm.toFixed(1)
-             + "  key=" + meta[track].key
-             + "  E=[" + rE.min.toFixed(1) + "," + rE.max.toFixed(1) + "] LUFS"
-             + "  C=[" + Math.round(rC.min) + "," + Math.round(rC.max) + "] Hz\n");
     }
 
     post("EBYS Slicer: index ready — " + idx.length + " total slices\n");
@@ -300,16 +431,18 @@ function buildIndex() {
         byTrack.bass   ? byTrack.bass.length   : 0,
         byTrack.drums  ? byTrack.drums.length  : 0
     );
-    // Emit track name from vocals metadata (all stems share the same track)
-    var rawName = (meta["vocals"] && meta["vocals"].track_name) ? meta["vocals"].track_name : "";
-    var trackName = rawName.replace(/_(vocals|melody|bass|drums|melo)(\.\w+)?$/i, "").trim();
-    if (trackName) outlet(1, "track_name", trackName);
+    // Emit source track names and their slots
+    for (var si = 0; si < sourceNames.length; si++) {
+        outlet(1, "sourceTrack", si, sourceNames[si]);
+    }
     // Ask Max to resend stem durations — stemDurMs resets on every autowatch reload
     outlet(1, "need_stemDurs");
     // Load downbeat data from allin1_tagger.py output (if present)
     loadDownbeats();
     // Persist index to JSON so it survives patch reloads
     saveIndex();
+    // Compute per-stem UMAP embeddings (requires fluid objects wired in Max patch)
+    feedUMAP();
 }
 
 // ── INDEX PERSISTENCE ─────────────────────────────────────────────────────────
@@ -526,17 +659,24 @@ function selectSegment(track) {
     var targetMs = barMs * SEGMENT_BARS[track];
 
     // Convert fractions to ms using known stem duration.
-    // stemDurMs[track] must be set via setStemDurMs before start().
-    var durMs = stemDurMs[track] || 0;
-    var hasDur = durMs > 0;
+    // With multi-track, each slice carries its own stemDurMs from the library.
+    // The global stemDurMs[track] is used as a fallback only.
+    // Pool building uses per-slice stemDurMs so bar-alignment works across different
+    // source tracks that may have different durations.
+    var hasDur = false;
+    for (var i = 0; i < arr.length; i++) {
+        if ((arr[i].stemDurMs || 0) > 0) { hasDur = true; break; }
+    }
+    if (!hasDur && stemDurMs[track] > 0) hasDur = true;
 
     // Build candidate pool (bar-aligned or full).
-    // Bar-alignment only makes sense when we have real ms positions.
     var pool = null;
     if (QUANTIZE_BARS && hasDur) {
         var aligned = [];
         for (var i = 0; i < arr.length; i++) {
-            var posMs = arr[i].time * durMs;
+            var sliceDurMs = arr[i].stemDurMs || stemDurMs[track] || 0;
+            if (sliceDurMs <= 0) { aligned.push(i); continue; }
+            var posMs = arr[i].time * sliceDurMs;
             if (isNearDownbeat(posMs, track, barMs)) aligned.push(i);
         }
         if (aligned.length >= 2) pool = aligned;
@@ -567,12 +707,20 @@ function selectSegment(track) {
 
     var startSlice = arr[startIdx];
 
+    // Use this slice's own stemDurMs for accumulation (multi-track: different tracks
+    // can have different durations; each slice knows which track it's from).
+    var durMs = startSlice.stemDurMs || stemDurMs[track] || 0;
+
     // Accumulate consecutive slices until targetMs covered.
-    // dur fields are fractions; convert to ms on the fly.
+    // CRITICAL: only include slices from the SAME source track as startSlice.
+    // This ensures each segment is a coherent excerpt from one recording,
+    // not a cross-track splice mid-segment.
     var totalFrac = 0;
     var i = startIdx;
-    if (hasDur) {
-        while (i < arr.length && (totalFrac * durMs) < targetMs) {
+    if (durMs > 0) {
+        while (i < arr.length
+               && arr[i].sourceTrack === startSlice.sourceTrack
+               && (totalFrac * durMs) < targetMs) {
             totalFrac += arr[i].dur;
             i++;
         }
@@ -583,7 +731,9 @@ function selectSegment(track) {
         // so setSegmentBars still has an effect even before stemDurMs is set
         var fallbackCount = Math.max(4, Math.round(SEGMENT_BARS[track] * 8));
         var count = 0;
-        while (i < arr.length && count < fallbackCount) {
+        while (i < arr.length
+               && arr[i].sourceTrack === startSlice.sourceTrack
+               && count < fallbackCount) {
             totalFrac += arr[i].dur;
             i++;
             count++;
@@ -604,26 +754,38 @@ function selectSegment(track) {
         H: startSlice.endH, T: startSlice.endT
     };
 
-    // Compute actual duration in ms for Task scheduling
+    // Compute actual duration in ms for delay timing in Max (sent on outlet 0)
     var segDurMs;
-    if (hasDur) {
+    if (durMs > 0) {
         segDurMs = totalFrac * durMs;
     } else {
         // stemDurMs unknown — estimate from BPM alone
         var bpmEst = effectiveBPM(track);
-        segDurMs = (60000.0 / bpmEst) * 4.0 * SEGMENT_BARS;
+        segDurMs = (60000.0 / bpmEst) * 4.0 * SEGMENT_BARS[track];
     }
-    // Emit absolute time position in ms so TUI can display a timestamp
-    var sliceMs = (hasDur) ? Math.round(startSlice.time * durMs) : 0;
+    // Emit absolute time position in ms (for TUI timer anchor via slice_ms on outlet 1)
+    var sliceMs = (durMs > 0) ? Math.round(startSlice.time * durMs) : 0;
 
-    outlet(0, track, startSlice.time, endFrac, stretchRatioFor(track));
-    outlet(1, "desc",     track, startSlice.C, startSlice.E, startSlice.F, startSlice.P);
-    outlet(1, "slice_ms", track, sliceMs);
+    // outlet 0: track  slot  startFrac  endFrac  stretchRatio  segDurMs
+    //   track       = stem type: "vocals" | "melody" | "bass" | "drums"
+    //   slot        = source track index (0 = first alphabetical, 1 = second, …)
+    //   startFrac   = 0–1 fraction of buffer where segment starts
+    //   endFrac     = 0–1 fraction of buffer where segment ends
+    //   stretchRatio= srcBPM / globalBPM  (1.0 when no override)
+    //   segDurMs    = segment duration in ms — slot_router.js uses this for delay timing
+    outlet(0, track, startSlice.slot || 0, startSlice.time, endFrac,
+           stretchRatioFor(track), Math.round(segDurMs));
+    outlet(1, "desc",      track, startSlice.C, startSlice.E, startSlice.F, startSlice.P, startSlice.H, startSlice.T,
+           startSlice.tension_C, startSlice.tension_E, startSlice.tension_F,
+           startSlice.tension_P, startSlice.tension_H, startSlice.tension_T);
+    outlet(1, "slice_ms",  track, sliceMs);
+    outlet(1, "stemTrack", track, cleanTrackName(track));
     outlet(1, "seg",
            track,
            startSlice.id,
            hasDur ? (Math.round(segDurMs) + "ms") : (totalFrac.toFixed(3) + " frac"),
-           "(" + (segDurMs / ((60000.0 / effectiveBPM(track)) * 4.0)).toFixed(1) + " bars)");
+           "(" + (segDurMs / ((60000.0 / effectiveBPM(track)) * 4.0)).toFixed(1) + " bars)",
+           startSlice.time, endFrac);
 }
 
 // ── TRANSPORT ─────────────────────────────────────────────────────────────────
@@ -652,8 +814,21 @@ function next(track) {
         // If this stem is looping, replay the locked position
         if (loopState[track]) {
             var lp = loopState[track];
-            outlet(0, track, lp.startTime, lp.endTime, stretchRatioFor(track));
-            outlet(1, "seg", track, "loop", lp.bars + "bars", "(looping)");
+            var loopSliceRef = byTrack[track] && byTrack[track][lp.startIdx];
+            var lpDurMs   = (loopSliceRef && loopSliceRef.stemDurMs) || stemDurMs[track] || 0;
+            var lpSlot    = (loopSliceRef && loopSliceRef.slot) || 0;
+            var loopSegMs = lpDurMs > 0 ? Math.round((lp.endTime - lp.startTime) * lpDurMs) : 4000;
+            outlet(0, track, lpSlot, lp.startTime, lp.endTime, stretchRatioFor(track), loopSegMs);
+            // Emit desc so TUI gets fresh descriptor values for this loop cycle
+            var loopSlice = byTrack[track] && byTrack[track][lp.startIdx];
+            if (loopSlice) {
+                outlet(1, "desc", track, loopSlice.C, loopSlice.E, loopSlice.F,
+                       loopSlice.P, loopSlice.H, loopSlice.T,
+                       loopSlice.tension_C, loopSlice.tension_E, loopSlice.tension_F,
+                       loopSlice.tension_P, loopSlice.tension_H, loopSlice.tension_T);
+            }
+            loopCycles[track]++;
+            outlet(1, "seg", track, "loop" + loopCycles[track], lp.bars + "bars", "(looping)");
         } else {
             selectSegment(track);
         }
@@ -829,12 +1004,16 @@ function nextNearest(track, C, E, F, P) {
 
     var sliceMs = hasDur ? Math.round(s.time * durMs) : 0;
 
-    outlet(0, track, s.time, endFrac, stretchRatioFor(track));
-    outlet(1, "desc",     track, s.C, s.E, s.F, s.P);
-    outlet(1, "slice_ms", track, sliceMs);
+    outlet(0, track, sliceMs, Math.round(totalFrac * durMs), stretchRatioFor(track));
+    outlet(1, "desc",      track, s.C, s.E, s.F, s.P, s.H, s.T,
+           s.tension_C, s.tension_E, s.tension_F,
+           s.tension_P, s.tension_H, s.tension_T);
+    outlet(1, "slice_ms",  track, sliceMs);
+    outlet(1, "stemTrack", track, cleanTrackName(track));
     outlet(1, "seg", track, s.id,
            hasDur ? (Math.round(totalFrac * durMs) + "ms") : (totalFrac.toFixed(3) + " frac"),
-           "dist=" + bestDist.toFixed(2));
+           "dist=" + bestDist.toFixed(2),
+           s.time, endFrac);
 }
 
 // ── PARAMETER SETTERS ─────────────────────────────────────────────────────────
@@ -1079,6 +1258,133 @@ function info() {
     post("  lastSlice: " + (lastSlice
          ? lastSlice.track + " @" + lastSlice.time.toFixed(0) + "ms"
          : "none") + "\n");
+}
+
+// ── UMAP — per-stem 2D embedding via fluid.umap~ ─────────────────────────────
+//
+// After buildIndex() the descriptor data lives in slicer.js memory (byTrack).
+// We push it into fluid.dataset~ ebys.descriptors, run fluid.umap~, then
+// collect the 2D output from fluid.dataset~ ebys.umap into umap_coords.json.
+//
+// Max patch wiring required (do this once in EBYS_ANALYZE.maxpat):
+//   1. Rename objects:
+//        fluid.dataset~ ebys.descriptors
+//        fluid.dataset~ ebys.umap
+//        fluid.umap~ @components 2 @mindist 0.1 @numneighbours 15
+//   2. Wire:
+//        [js slicer.js] outlet 4  →  [fluid.dataset~ ebys.descriptors]
+//        [js slicer.js] outlet 4  →  [fluid.umap~]
+//        [fluid.umap~] outlet 0   →  [prepend dump]  →  [fluid.dataset~ ebys.umap]
+//        [fluid.dataset~ ebys.umap] outlet 0  →  [js slicer.js] inlet 1
+//
+// Outlets:
+//   outlet 4 → fluid.dataset~ ebys.descriptors   (read, clear)
+//   outlet 5 → fluid.umap~                        (fitTransform)
+// Do NOT wire outlet 4 to fluid.umap~ — they must be on separate outlets.
+
+var umapBuffer      = [];   // collects [id, x, y] during dump for current stem
+var umapCurrentStem = null;
+var umapStemQueue   = [];   // stems still waiting to be processed
+var umapResults     = {};   // { vocals: { slice_0001: [x,y], ... }, ... }
+var UMAP_FILE       = "umap_coords.json";
+var MIN_UMAP_SLICES = 5;    // fluid.umap~ needs at least a few points
+
+function feedUMAP() {
+    // t-SNE is now computed in ws_server.js (Node) immediately after buildIndex.
+    // No fluid.umap~ wiring needed — umapDone will broadcast when umap_coords.json is ready.
+    post("EBYS UMAP: delegated to ws_server.js (Node t-SNE) — no fluid objects needed\n");
+}
+
+function feedNextUmapStem() {
+    if (umapStemQueue.length === 0) {
+        writeUmapCoords();
+        return;
+    }
+    umapCurrentStem = umapStemQueue.shift();
+    umapBuffer      = [];
+    var arr = byTrack[umapCurrentStem];
+    post("EBYS UMAP [" + umapCurrentStem + "]: writing " + arr.length + " slices…\n");
+
+    // Write descriptor data in FluCoMa dataset JSON format so fluid.dataset~ can
+    // load it with "read".  This avoids addpoint (which needs a buffer~ per point).
+    // Format: {"version":1,"cols":6,"data":{"slice_0001":[C,E,F,P,H,T], ...}}
+    var fname = "ebys_feed_" + umapCurrentStem + ".json";
+    var f = new File(fname, "write");
+    f.open();
+    f.writestring('{"version":1,"cols":6,"data":{');
+    for (var i = 0; i < arr.length; i++) {
+        var s = arr[i];
+        if (i > 0) f.writestring(",");
+        f.writestring('"' + s.id + '":[' +
+            s.C.toFixed(6) + "," + s.E.toFixed(6) + "," +
+            s.F.toFixed(6) + "," + s.P.toFixed(6) + "," +
+            s.H.toFixed(6) + "," + s.T.toFixed(6) + "]");
+    }
+    f.writestring("}}");
+    f.close();
+
+    // Tell fluid.dataset~ ebys.descriptors to load this file (outlet 4).
+    // fluid.dataset~ read is asynchronous; wait 2 s before triggering fit.
+    // (If [js slicer.js] inlet 2 is wired to fluid.dataset~ ebys.descriptors outlet 0,
+    //  the bang() inlet-2 handler fires fit immediately and the timer becomes a no-op.)
+    outlet(4, "read", fname);
+
+    var t = new Task(function() {
+        if (!umapCurrentStem) return;          // inlet-2 bang already fired fit — skip
+        post("EBYS UMAP [" + umapCurrentStem + "]: fit ebys.descriptors → ebys.umap (timer)…\n");
+        outlet(5, "fit", "ebys.descriptors", "ebys.umap");
+    });
+    t.schedule(2000);
+}
+
+// Receive dump stream from fluid.dataset~ ebys.umap via inlet 1.
+// Each point arrives as:  messagename = slice_id,  arguments = [x, y]
+function anything() {
+    if (inlet !== 1) return;
+    var id = String(messagename);
+    var x  = parseFloat(arguments[0]);
+    var y  = parseFloat(arguments[1]);
+    if (id && !isNaN(x) && !isNaN(y)) {
+        umapBuffer.push([id, x, y]);
+    }
+}
+
+// Bang on inlet 2 = fluid.dataset~ ebys.descriptors finished reading — now safe to fit.
+// Bang on inlet 1 = fluid.dataset~ ebys.umap dump is complete for this stem.
+function bang() {
+    if (inlet === 2) {
+        // Descriptors dataset finished loading — trigger fit immediately (beats the 2 s timer).
+        if (!umapCurrentStem) return;
+        var stem = umapCurrentStem;
+        umapCurrentStem = null;   // signal timer that fit was already sent
+        post("EBYS UMAP [" + stem + "]: fit ebys.descriptors → ebys.umap (bang)…\n");
+        outlet(5, "fit", "ebys.descriptors", "ebys.umap");
+        umapCurrentStem = stem;   // restore so bang() inlet-1 can still collect results
+        return;
+    }
+    if (inlet !== 1) return;
+    if (umapCurrentStem) {
+        var coords = {};
+        for (var i = 0; i < umapBuffer.length; i++) {
+            coords[umapBuffer[i][0]] = [umapBuffer[i][1], umapBuffer[i][2]];
+        }
+        umapResults[umapCurrentStem] = coords;
+        post("EBYS UMAP [" + umapCurrentStem + "]: " + umapBuffer.length + " 2D coords collected\n");
+    }
+    feedNextUmapStem();  // move on to next stem (or finish)
+}
+
+function writeUmapCoords() {
+    try {
+        var f = new File(UMAP_FILE, "write", "TEXT");
+        f.open();
+        f.writestring(JSON.stringify(umapResults));
+        f.close();
+        post("EBYS UMAP: coords written to " + UMAP_FILE + "\n");
+        outlet(1, "umapDone");   // notifies ws_server → TUI to reload
+    } catch (e) {
+        post("EBYS UMAP: write failed — " + e + "\n");
+    }
 }
 
 // ── RESET ─────────────────────────────────────────────────────────────────────

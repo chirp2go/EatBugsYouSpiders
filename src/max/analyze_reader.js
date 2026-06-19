@@ -23,40 +23,66 @@ var currentTrackName = "";
 var skipCurrentTrack = false;
 
 // ── Stream.txt path store ─────────────────────────────────────────────────────
-// Bypasses Max's text object (which truncates long lines / fails with Unicode).
-// Populated by readStreamTxt(), triggered by the same bang that fires
-// "read stream.txt" in the patch.  startStem(n) loads the correct buffer.
-var stemPaths      = { 1: "", 2: "", 3: "", 4: "" };  // keyed by counter step 1-4
-var analysisActive = false;   // true while an analysis run is in progress
-var stemsThisRun   = 0;       // how many stems have been completed this run
+// stream.txt is a flat list: 4 lines per track (vocals, drums, bass, melody).
+// Max counter cycles 1→4 per track; currentBatch tracks which group of 4 we're on.
+// allStemPaths[currentBatch*4 + (n-1)] gives the path for counter step n.
+var stemPaths      = { 1: "", 2: "", 3: "", 4: "" };  // first batch (backward compat)
+var allStemPaths   = [];      // flat array of all paths from stream.txt
+var currentBatch   = 0;       // which track (0-based) we're currently analyzing
+var analysisActive  = false;  // true while an analysis run is in progress
+var pendingRestart  = false;  // stream.txt changed while busy — re-run when done
+var stemsThisRun    = 0;      // stems completed in the current batch
 
 // advanceCounter — single exit point for advancing the counter.
-// Tracks progress and disables the analysis loop when all 4 stems are done.
+// Each batch of 4 = one track. When a batch finishes, moves to the next.
 function advanceCounter() {
     stemsThisRun++;
-    post("analyze_reader: step " + stemsThisRun + "/4 done\n");
+    var totalBatches = Math.ceil(allStemPaths.length / 4) || 1;
+    post("analyze_reader: batch " + currentBatch + " step " + stemsThisRun + "/4 done\n");
+
     if (stemsThisRun >= 4) {
-        analysisActive = false;
-        post("analyze_reader: ✓ all 4 stems done — analysis complete\n");
-        outlet(1, "all_done");
+        // Batch complete — do NOT fire outlet(2,"bang") here.
+        // The counter wraps at 4→1 which would re-trigger startStem(1) synchronously,
+        // causing infinite recursive skipping. The Task handles the transition instead.
+        currentBatch++;
+        if (currentBatch < totalBatches) {
+            stemsThisRun = 0;
+            post("analyze_reader: → batch " + currentBatch + "/" + (totalBatches-1) + "\n");
+            var t = new Task(function() {
+                outlet(4, "set", 0);   // reset counter to 0 silently
+                outlet(2, "bang");     // 0 → 1 → fires startStem(1) for next batch
+            }, this);
+            t.schedule(50);
+        } else {
+            analysisActive = false;
+            post("analyze_reader: ✓ all " + allStemPaths.length + " stems done\n");
+            outlet(1, "all_done");
+            // If stream.txt changed while we were busy, re-run now
+            if (pendingRestart) {
+                pendingRestart = false;
+                post("analyze_reader: running queued analysis (stream.txt updated while busy)\n");
+                var t = new Task(function() { startAnalysis(); outlet(4, "set", 0); }, this);
+                t.schedule(200);
+            }
+        }
+    } else {
+        // Normal step advance (steps 1→2→3) — safe to fire synchronously.
+        outlet(2, "bang");
     }
-    outlet(2, "bang");  // always advance the counter
 }
 
 function readStreamTxt() {
-    analysisActive  = true;
-    stemsThisRun    = 0;
+    analysisActive = true;
+    stemsThisRun   = 0;
+    currentBatch   = 0;
+    allStemPaths   = [];
 
     var dir = getPatcherDir();
-    post("analyze_reader: patcher dir = " + dir + "\n");
-
-    // stream.txt lives one folder above the MAX/ subfolder.
-    // Try several path strategies in case getPatcherDir returns different forms.
     var candidates = [
-        dir.replace(/\/MAX\/$/, "/")   + "stream.txt",   // strip trailing /MAX/
-        dir.replace(/\/MAX$/,   "/")   + "stream.txt",   // strip /MAX (no trailing slash)
-        dir                            + "../stream.txt", // parent via ..
-        dir                            + "stream.txt",   // same folder fallback
+        dir.replace(/\/MAX\/$/, "/") + "stream.txt",
+        dir.replace(/\/MAX$/,   "/") + "stream.txt",
+        dir + "../stream.txt",
+        dir + "stream.txt",
     ];
 
     var f = null, usedPath = "";
@@ -64,38 +90,33 @@ function readStreamTxt() {
         f = new File(candidates[i], "read", "TEXT");
         if (f && f.isopen) { usedPath = candidates[i]; break; }
     }
-
     if (!f || !f.isopen) {
-        post("analyze_reader: ERROR — stream.txt not found. Tried:\n");
-        for (var i = 0; i < candidates.length; i++) post("  [" + i + "] " + candidates[i] + "\n");
+        post("analyze_reader: ERROR — stream.txt not found\n");
         analysisActive = false;
         return;
     }
-    post("analyze_reader: stream.txt opened — " + usedPath + "\n");
+    post("analyze_reader: reading " + usedPath + "\n");
 
-    var idx = 1;
-    while (idx <= 4) {
+    // Read ALL lines — format: "label /full/path/stem.wav"
+    while (true) {
         var line = f.readline();
         if (line === null || line === undefined) break;
-        line = line.replace(/[\r\n]+$/, "");   // strip CR/LF
-        if (line === "") { idx++; continue; }  // skip blank lines (e.g. trailing newline)
-        // format: "label /full/path/stem.wav"
+        line = line.replace(/[\r\n]+$/, "");
+        if (line === "") continue;
         var space = line.indexOf(" ");
-        if (space > 0) stemPaths[idx] = line.slice(space + 1).trim();
-        else            stemPaths[idx] = line.trim();
-        post("analyze_reader: stemPaths[" + idx + "] = " + stemPaths[idx] + "\n");
-        idx++;
+        var path  = (space > 0) ? line.slice(space + 1).trim() : line.trim();
+        if (path) allStemPaths.push(path);
     }
     f.close();
 
-    post("analyze_reader: stream.txt loaded —"
-        + " 1=" + (stemPaths[1] ? "OK" : "MISSING")
-        + " 2=" + (stemPaths[2] ? "OK" : "MISSING")
-        + " 3=" + (stemPaths[3] ? "OK" : "MISSING")
-        + " 4=" + (stemPaths[4] ? "OK" : "MISSING") + "\n");
+    // Back-compat: populate stemPaths[1..4] from first batch
+    for (var i = 0; i < 4; i++) stemPaths[i+1] = allStemPaths[i] || "";
 
-    if (!stemPaths[1] && !stemPaths[2] && !stemPaths[3] && !stemPaths[4]) {
-        post("analyze_reader: ERROR — all paths empty after reading. Check stream.txt format.\n");
+    var nTracks = Math.ceil(allStemPaths.length / 4);
+    post("analyze_reader: " + allStemPaths.length + " stems loaded — " + nTracks + " track(s)\n");
+
+    if (allStemPaths.length === 0) {
+        post("analyze_reader: ERROR — stream.txt empty or unreadable\n");
         analysisActive = false;
     }
 }
@@ -104,7 +125,7 @@ var STEP_STEMS_MAP    = { 1: "vocals", 2: "drums", 3: "bass", 4: "melody" };
 var STEP_OUTLETS_MAP  = { 1: 5,       2: 6,       3: 7,     4: 8        };
 
 // startStem(n) — called by "startStem $1" wired to counter outlet 0.
-// Fires "read <path>" directly to the correct buffer~ outlet (5=vocals, 6=drums, 7=bass, 8=melo).
+// n = 1-4 (position in current batch). Global index = currentBatch*4 + (n-1).
 function startStem(n) {
     n = parseInt(n);
 
@@ -113,31 +134,32 @@ function startStem(n) {
         return;
     }
 
-    var stemName = STEP_STEMS_MAP[n];
+    var stemName  = STEP_STEMS_MAP[n];
+    var outIdx    = STEP_OUTLETS_MAP[n];
+    var globalIdx = currentBatch * 4 + (n - 1);
+    var path      = allStemPaths[globalIdx] || "";
+
     if (!stemName) { post("analyze_reader: startStem — unknown step " + n + "\n"); return; }
 
-    if (stemAlreadyAnalyzed(stemName)) {
-        post("analyze_reader: startStem " + n + " (" + stemName + ") already in library — skipping\n");
-        advanceCounter();
-        return;
-    }
-
-    var path   = stemPaths[n];
-    var outIdx = STEP_OUTLETS_MAP[n];
-
     if (!path) {
-        post("analyze_reader: startStem " + n + " — no path (readStreamTxt may have failed)\n");
+        post("analyze_reader: startStem " + n + " — no path at index " + globalIdx + "\n");
         advanceCounter();
         return;
     }
 
-    // Set track name from the correct file path (overrides whatever the text object sent).
+    // Exact-filename check — "439_vocals.wav" != "DREPTO_vocals.wav"
+    if (stemAlreadyAnalyzedPath(path)) {
+        post("analyze_reader: [batch " + currentBatch + "] " + stemName + " already analyzed — skipping\n");
+        advanceCounter();
+        return;
+    }
+
     var slash = path.lastIndexOf('/');
     currentTrackName = (slash >= 0) ? path.slice(slash + 1) : path;
     outlet(0, "set_track_name", currentTrackName);
 
-    post("analyze_reader: startStem " + n + " [" + stemName + "] → " + path + "\n");
-    outlet(outIdx, "read", path);   // fires "read /path" directly to buffer~ inlet
+    post("analyze_reader: [batch " + currentBatch + "] startStem " + n + " [" + stemName + "] -> " + path + "\n");
+    outlet(outIdx, "read", path);
 }
 
 // getPatcherDir — POSIX folder of the patch file, volume prefix stripped.
@@ -213,6 +235,82 @@ function loadRegistry() {
     post("analyze_reader: " + nDone + " stems done → counter set to " + (nDone + 1) + "\n");
 }
 
+// ── Multi-track sequential analysis ──────────────────────────────────────────
+// prepareNextTrack — scans htdemucs for a track that isn't fully in the library.
+// If found: writes stream.txt for it and returns true (caller should restart loop).
+// If all done: returns false.
+var HT_PATH      = "/Users/alexandregagne/Documents/EBYS/EBYS_INFRA/stems/htdemucs";
+var STREAM_PATH  = "/Users/alexandregagne/Documents/EBYS/EBYS_INFRA/stream.txt";
+var NEXT_SUFFIXES = ['_vocals.wav', '_drums.wav', '_bass.wav', '_other.wav'];
+var NEXT_LABELS   = ['vocals',     'drums',      'bass',      'melody'    ];
+
+function prepareNextTrack() {
+    readRegistryFile();
+    var regKeys = Object.keys(analysisRegistry);
+
+    var htFolder = new Folder(HT_PATH);
+    if (!htFolder || htFolder.end) {
+        post("prepareNextTrack: cannot open " + HT_PATH + "\n");
+        return false;
+    }
+
+    var nextLines = null;
+
+    while (!htFolder.end && nextLines === null) {
+        var trackFolder = htFolder.filename;
+        htFolder.next();
+
+        var trackPath = HT_PATH + "/" + trackFolder;
+        var lines     = [];
+        var anyNew    = false;
+
+        for (var i = 0; i < NEXT_SUFFIXES.length; i++) {
+            var suffix = NEXT_SUFFIXES[i];
+            var label  = NEXT_LABELS[i];
+
+            // Find a file in this folder that ends with the expected suffix
+            var sf = new Folder(trackPath);
+            var foundPath = null;
+            while (!sf.end) {
+                var fname = sf.filename;
+                if (fname.length >= suffix.length &&
+                    fname.slice(-suffix.length).toLowerCase() === suffix) {
+                    foundPath = trackPath + "/" + fname;
+                }
+                sf.next();
+            }
+            sf.close();
+
+            if (!foundPath) continue;
+
+            var justName = foundPath.slice(foundPath.lastIndexOf('/') + 1);
+            var isNew = !analysisRegistry.hasOwnProperty(justName);
+            if (isNew) anyNew = true;
+            lines.push(label + " " + foundPath);
+        }
+
+        if (anyNew && lines.length > 0) nextLines = lines;
+    }
+    htFolder.close();
+
+    if (!nextLines) {
+        post("prepareNextTrack: all tracks already analyzed\n");
+        return false;
+    }
+
+    // Write stream.txt for the next track
+    var f = new File(STREAM_PATH, "write", "TEXT");
+    if (!f || !f.isopen) {
+        post("prepareNextTrack: cannot write " + STREAM_PATH + "\n");
+        return false;
+    }
+    for (var i = 0; i < nextLines.length; i++) f.writeline(nextLines[i]);
+    f.close();
+
+    post("prepareNextTrack: stream.txt written — " + nextLines.length + " stems\n");
+    return true;
+}
+
 // resetMemory — clears the in-memory registry and resets counter to 1
 function resetMemory() {
     analysisRegistry = {};
@@ -224,6 +322,31 @@ function resetMemory() {
 function setHopSize(n) {
     HOP_SIZE = parseInt(n);
     post("analyze_reader: hopSize = " + HOP_SIZE + "\n");
+}
+
+// startAnalysis — single entry point for triggering a full analysis run.
+// Can be called from:
+//   - Max patch via [prepend startAnalysis] → this js object
+//   - filewatch bang → [prepend startAnalysis] → this js object  (automatic)
+//   - WebSocket command from TUI (:analyzeAll)
+// startAnalysis — reads stream.txt + resets counter to 0.
+// The trigger's outlet 0 then bangs the counter → 1 → startStem(1).
+// Wire: filewatch → [t b b b b] outlet3 → [startAnalysis] → js analyze_reader
+//       [t b b b b] outlet0 still bangs [counter 1 4] as before.
+function startAnalysis() {
+    if (analysisActive) {
+        post("analyze_reader: startAnalysis — already running, queuing re-run\n");
+        pendingRestart = true;
+        return;
+    }
+    post("analyze_reader: startAnalysis triggered\n");
+    readStreamTxt();
+    if (allStemPaths.length === 0) {
+        post("analyze_reader: startAnalysis — no stems found, aborting\n");
+        return;
+    }
+    // Reset counter to 0 silently — the trigger's outlet 0 will bang it to 1 next.
+    outlet(4, "set", 0);
 }
 
 // Called from Max patch (prepend set_track_name → this object).
@@ -442,7 +565,7 @@ var STEM_SUFFIXES = {
 };
 
 function stemAlreadyAnalyzed(name) {
-    // Check by suffix against registry keys — immune to wrong currentTrackName.
+    // Legacy suffix check — kept for readStem() fallback path only.
     var suffix = STEM_SUFFIXES[name];
     if (!suffix) return false;
     readRegistryFile();
@@ -451,6 +574,15 @@ function stemAlreadyAnalyzed(name) {
         if (regKeys[j].toLowerCase().indexOf(suffix) !== -1) return true;
     }
     return false;
+}
+
+// stemAlreadyAnalyzedPath — checks the exact filename against the registry.
+// Correct for multi-track: "439iSMT_vocals.wav" ≠ "DREPTO_vocals.wav".
+function stemAlreadyAnalyzedPath(path) {
+    if (!path) return false;
+    var fname = path.slice(path.lastIndexOf('/') + 1);
+    readRegistryFile();
+    return analysisRegistry.hasOwnProperty(fname);
 }
 
 // Derive the correct full filename for a stem — guards against set_track_name()
@@ -470,12 +602,9 @@ function deriveTrackName(name) {
 }
 
 function readStem(name) {
-    if (stemAlreadyAnalyzed(name)) {
-        post("analyze_reader [" + name + "]: already in library — skipping\n");
-        outlet(1, "skip", name);
-        advanceCounter();
-        return;
-    }
+    // NOTE: skip detection is handled upstream in startStem() via exact filename check.
+    // Do NOT check stemAlreadyAnalyzed(name) here — suffix matching falsely skips stems
+    // from a second track because they share suffixes with the first track's registry entries.
 
     // Always derive and enforce the correct track name for this stem before any writes.
     // Does not rely on set_track_name() timing from the patch — derives it here directly.
