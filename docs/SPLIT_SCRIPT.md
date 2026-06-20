@@ -19,19 +19,15 @@ EBYS has full visibility into the mix at every moment:
 - How many distinct tracks are contributing
 - How rapidly EBYS has been switching between sources
 - How spectrally different those sources are from each other
-- Which stem each track contributed to, and how heavily weighted that stem was
-- Which track the other tracks adapted to — who led, who followed
+- The full `followStem` graph — who is following who, and at what weight
 
 ---
 
 ## How Leadership Is Determined
 
-Leadership in EBYS is emergent — not declared by a single command, but felt through two mechanisms working together:
+Leadership is defined by the `followStem` graph at tip time. A stem that is followed by others — without fully following anyone itself — is the leader. Leadership is gradient, not binary. A stem can lead some and follow some simultaneously.
 
-- **`setTrackWeight`** — makes a stem louder and more dominant in the mix
-- **`setMatchProb`** — controls how tightly a stem's next slice must match the end state of another stem's last slice
-
-The stem being chased is the leader. The stem doing the chasing is the follower. At any moment, the leader is the stem with the highest active weight that others are matching against. EBYS knows this in real time — it's the signal that drives the artist split.
+The follow graph can form chains and loops. Influence flows up the chain and dilutes with each step. Loops are valid — they resolve into a stable distribution where the most-followed stem still earns the most.
 
 ---
 
@@ -54,26 +50,104 @@ The remaining `(1 - curator_share)` goes to the artists.
 
 ## The Artist Split
 
-The split is weighted by stem weight at the moment of the tip — not slice count. What matters is the hierarchy of the mix at that exact second: who's leading, who's following.
+Every stem earns a base credit just for playing — its material is present and contributing regardless of the follow relationship. On top of that, the follow hierarchy distributes a bonus toward leaders.
 
-**The leader** — the track with the highest active stem weight, whose state the other stems are matching against — earns the largest share. The tip is for the direction the mix was going, and the leader set that direction.
+```
+credit[stem] = base_credit + hierarchy_bonus[stem]
 
-**Supporting tracks** — stems actively following the leader via match probability — split the remainder proportionally by their weight.
+base_credit        = 0.80 / number_of_active_stems
+hierarchy_bonus    = 0.20 × normalised_hierarchy_score[stem]
+```
 
-**Briefly featured tracks** — present but not structurally central at tip time — earn the smallest share.
+The 80/20 split is the default. Configurable per deployment.
 
-The default is leader-weighted. But this is configurable per deployment — a label or community radio can adjust the distribution to reflect their own values about usage vs. contribution.
+---
 
-### The Role at the Moment of the Tip
+## The Hierarchy Score
 
-The mix is a fire — leaders interchange constantly. A track that was texture in one slice leads the next. The split is calculated at the moment the tip is sent, not across the whole session.
+**Step 1 — Own weight** (how much of a stem's credit it keeps vs. delegates):
+```
+own[stem] = 1 - sum of outgoing follow weights
+```
 
-Over many tips across many sessions, the economy balances itself. No track is permanently the worker or permanently the leader. The math is local to the tip, the fairness is global over time.
+**Step 2 — Incoming weight** (credit flowing in from stems that follow this one):
+```
+incoming[stem] = sum of (follower's own_weight × follow_amount) for each follower
+```
+
+**Step 3 — Hierarchy score**:
+```
+score[stem] = own[stem] + incoming[stem]
+```
+
+**Step 4 — Normalise** so all scores sum to 1.0:
+```
+normalised_score[stem] = score[stem] / sum(all scores)
+```
+
+---
+
+## Worked Example
+
+**Setup:**
+- Stem1 follows Stem2 at 100%
+- Stem2 follows Stem3 at 50%
+- Stem3 follows Stem4 at 30%
+- Stem4 follows Stem1 at 10% *(loop)*
+
+**Own weights:**
+```
+own[Stem1] = 1 - 1.00 = 0.00
+own[Stem2] = 1 - 0.50 = 0.50
+own[Stem3] = 1 - 0.30 = 0.70
+own[Stem4] = 1 - 0.10 = 0.90
+```
+
+**Incoming weights:**
+```
+incoming[Stem1] = 0.90 × 0.10 = 0.09
+incoming[Stem2] = 0.00 × 1.00 = 0.00
+incoming[Stem3] = 0.50 × 0.50 = 0.25
+incoming[Stem4] = 0.70 × 0.30 = 0.21
+```
+
+**Hierarchy scores:**
+```
+Stem1 = 0.00 + 0.09 = 0.09
+Stem2 = 0.50 + 0.00 = 0.50
+Stem3 = 0.70 + 0.25 = 0.95
+Stem4 = 0.90 + 0.21 = 1.11
+```
+
+**Normalised (sum = 2.65):**
+```
+Stem1 = 0.09 / 2.65 = 0.034
+Stem2 = 0.50 / 2.65 = 0.189
+Stem3 = 0.95 / 2.65 = 0.358
+Stem4 = 1.11 / 2.65 = 0.419
+```
+
+**Final credit (base 80% + hierarchy bonus 20%):**
+```
+Stem1 = 0.20 + (0.20 × 0.034) = 20.7%
+Stem2 = 0.20 + (0.20 × 0.189) = 23.8%
+Stem3 = 0.20 + (0.20 × 0.358) = 27.2%
+Stem4 = 0.20 + (0.20 × 0.419) = 28.4%
+```
+
+**Total = 100%** ✓
+
+Stem4 leads. Stem1 earns the least — it gave everything to Stem2 and only receives a small trickle back from Stem4's loop. The loop keeps Stem1 from earning nothing, but hierarchy is clear.
+
+---
+
+## The Role at the Moment of the Tip
+
+The mix is a fire — leaders interchange constantly. The split is calculated at the moment the tip is sent, from the follow graph active at that exact second. The math is local to the tip, the fairness is global over time.
 
 ---
 
 ## Open Questions
 
-- Exact weighting ratio between leader and followers — how much more does the leader earn?
-- How to handle ties — two stems at equal weight at tip time?
-- Should briefly featured tracks earn anything, or only tracks actively playing at tip time?
+- Should deep chain influence dilute further with each step, or stay proportional?
+- How to handle a stem with no follow relationships at all — equal base only?
