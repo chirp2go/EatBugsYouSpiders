@@ -10,6 +10,6 @@ Licence : AGPL-3.0
 
 - [`STATEMENT.md`](./docs/STATEMENT.md) — chirp!
 - [`CRICKET.md`](./docs/CRICKET.md) — documentation principale : paramètres, commandes, descripteurs, comportement du système.
-- [`ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — internal data pipeline : loading, analysis, selection, playback, training.
+- [`ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — internal data pipeline : loading, analysis, slicing, playback, training.
 
 
