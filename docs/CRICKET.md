@@ -101,6 +101,8 @@ When using nextNearest, how much each descriptor influences which slice is chose
 Higher weight = that quality matters more for finding a "similar" slice.
 Default: C=1.0 E=2.0 F=0.5 P=1.5 H=1.0 T=1.5
 
+**These defaults are provisional guesses.** The correct values are library-specific and taste-specific — they should be derived from the `:bake` training loop, not assumed upfront. Once enough bakes are collected, the fine-tuned model will have seen which weights actually produced the corrections you wanted, and those empirical values should replace these defaults.
+
 ### Transition Matching
 ```
 setMatchProb C <0.0–1.0>
