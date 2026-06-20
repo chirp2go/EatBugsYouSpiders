@@ -58,12 +58,12 @@ The mechanism is simple: if development stops, holders can no longer sell for hi
 
 ## Two Modes
 
-| | EBYS Radio | Self-hosted Radio |
-|---|---|---|
-| Corpus | Community-submitted | Curator-uploaded |
+|             | EBYS Radio           | Self-hosted Radio   |
+|-------------|----------------------|---------------------|
+| Corpus      | Community-submitted  | Curator-uploaded    |
 | Attribution | Verified by platform | Curator's integrity |
-| Split | Enforced by contract | No blockchain |
-| Enforcement | Technical | Social/reputational |
+| Split       | Enforced by contract | No blockchain       |
+| Enforcement | Technical            | Social/reputational |
 
 The tipping and blockchain system is exclusive to the official EBYS Montreal radio. It's a controlled environment — artists submit their tracks directly, attribution is verified by the platform, and the split is enforced by smart contract. Self-hosted radios are outside that system entirely. They can use EBYS as an instrument or run it as a radio, but there is no on-chain tipping, no enforced split, no escrow. That complexity only works when the corpus is trusted.
 
