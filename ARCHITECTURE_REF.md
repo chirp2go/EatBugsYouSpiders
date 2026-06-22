@@ -1,6 +1,6 @@
 # EBYS — Architecture Reference
 
-> **EBYS** (Electronic Beat Yield System) is a real-time generative audio collage engine. It takes uploaded music, separates it into stems, analyzes every sonic slice, and rebuilds the music live from a pool of spectral-descriptor-indexed segments — driven by an AI personality (Cricket) running on a local LLM.
+> **EBYS** (Eat Bugs You Spider!) is a real-time generative audio collage engine. It takes uploaded music, separates it into stems, analyzes every sonic slice, and rebuilds the music live from a pool of spectral-descriptor-indexed segments — driven by an AI personality (Cricket) running on a local LLM.
 
 ---
 
@@ -133,7 +133,7 @@ Requires Python ≤ 3.11 (madmom won't compile on 3.12+).
 **Location:** `EBYS_INFRA/send_to_max.py`
 **Type:** Legacy Python polling script
 
-Older approach: polls `stems/htdemucs/` every 500ms and writes a flat `stream.txt` listing all `.wav` paths with their stem type. `streamWatcher.js` in Max detects changes and triggers analysis. This is now mostly superseded by `watch_demucs.py` doing it directly, but the stream.txt mechanism is still used.
+Older approach: polls `stems/htdemucs/` every 500ms and writes a flat `stream.txt` listing all `.wav` paths with their stem type. `streamWatcher.js` in Max detects changes and triggers analysis. Mostly superseded by `watch_demucs.py`, but the stream.txt mechanism is still used.
 
 ### `rename_stems.py`
 **Location:** `EBYS_INFRA/rename_stems.py`
@@ -166,7 +166,7 @@ The main Max patch. Contains all wiring between JS objects, FluCoMa objects, buf
 **Location:** `EBYS_INFRA/MAX/ebys-pitch.maxpat`
 **Type:** Max sub-patch
 
-Encapsulated pitch analysis patch, likely a bpatcher for the pitch FluCoMa chain.
+Encapsulated pitch analysis patch, used as a bpatcher for the pitch FluCoMa chain.
 
 ### `streamWatcher.js`
 **Location:** `EBYS_INFRA/MAX/streamWatcher.js`
@@ -178,7 +178,7 @@ Polls `stream.txt` every 1 second. When the file content changes (new stems appe
 **Location:** `EBYS_INFRA/MAX/analyze_reader.js`
 **Type:** Max JS object (`js analyze_reader.js`)
 
-Reads the FluCoMa `buf~` output buffers **after** FluCoMa finishes processing a stem. Iterates every analysis frame (one per onset slice), extracts descriptors (C, E, F, P, H, M0–M5), and sends them to `slice_writer.js` via outlet 0. Manages the multi-track analysis loop: batches of 4 stems (one track), advances a Max counter to trigger FluCoMa on the next stem, moves to the next batch when done.
+Reads the FluCoMa `buf~` output buffers after FluCoMa finishes processing a stem. Iterates every analysis frame (one per onset slice), extracts descriptors (C, E, F, P, H, M0–M5), and sends them to `slice_writer.js` via outlet 0. Manages the multi-track analysis loop: batches of 4 stems (one track), advances a Max counter to trigger FluCoMa on the next stem, moves to the next batch when done.
 
 Also loads `analysis_library.json` into the `analysisLib` dict at startup (triggered by the dict's outlet 1 wire → loadRegistry message) so that previously analyzed tracks are available immediately without re-analysis.
 
@@ -227,13 +227,13 @@ Simple stem type classifier: given a file path, routes it to the `drums` or `ins
 **Location:** `EBYS_INFRA/MAX/bpm_from_tempogram.js`
 **Type:** Max JS object — **DEPRECATED**
 
-Written to extract BPM from a `fluid.buftempogram~` buffer. Marked deprecated in the file because `fluid.buftempogram~` doesn't exist in FluCoMa. Kept for reference. BPM detection now handled by `madmom_tagger.py`.
+Written to extract BPM from a `fluid.buftempogram~` buffer. Marked deprecated because `fluid.buftempogram~` doesn't exist in FluCoMa. BPM detection now handled by `madmom_tagger.py`.
 
 ### `stems.js`
 **Location:** `EBYS_INFRA/MAX/stems.js`
 **Type:** Max JS object stub
 
-Contains only `post("JS OBJECT WORKS\n")`. Placeholder/test object from an early development stage.
+Contains only `post("JS OBJECT WORKS\n")`. Placeholder from an early development stage.
 
 ---
 
@@ -253,7 +253,7 @@ The central nervous system of EBYS. Bridges Max and the outside world (TUI, Cric
 3. After 500ms (FluCoMa buffers settle), calls `computeAndWriteUMAP()`
 4. `buildIndexInProgress` guard flag prevents duplicate builds
 
-**computeAndWriteUMAP()**: 
+**computeAndWriteUMAP()**:
 1. Synchronously extracts 6-D features (C, E, F, P, H, T) per slice per stem
 2. Writes `stem_ranges.json` immediately (no blocking)
 3. Spawns `tsne_worker.js` via Worker thread (non-blocking, keeps WebSocket alive)
@@ -264,8 +264,6 @@ The central nervous system of EBYS. Bridges Max and the outside world (TUI, Cric
 **Slice command relay**: relays `vocals/melody/bass/drums` play commands and `pitchShift` from TUI to Max outlets.
 
 **Chunk reassembly** (`saveIdxChunk`): receives `ebys_index.json` from slicer.js in 2048-char chunks and saves to disk.
-
-**Handlers**: `downbeatchunk`, `sourceTrack`, `analysisDone`, `umapDone`, `globalBPM`, `stemDurMs`, `meta`, `ready`, `stopped`, `resetMemory`, `streamUpdated`.
 
 ### `tsne_worker.js`
 **Location:** `EBYS_INFRA/MAX/tsne_worker.js`
@@ -306,13 +304,13 @@ Two-level buffer architecture for zero-glitch multi-track playback:
 
 **Level 1 — src buffers** (`src_0/1_voc/drm/bss/mel`, 8 total): full-length audio files loaded from disk. Two slots per stem enable crossfading between tracks without re-reading from disk.
 
-**Level 2 — ring buffers** (`ring_0/1_voc/drm/bss/mel`, 8 total): short pre-allocated buffers. `fluid.bufcompose~` copies the exact segment (a few seconds) from the active src buffer into a ring buffer in ~1ms — much faster than reading from disk.
+**Level 2 — ring buffers** (`ring_0/1_voc/drm/bss/mel`, 8 total): short pre-allocated buffers. `fluid.bufcompose~` copies the exact segment from the active src buffer into a ring buffer in ~1ms — much faster than reading from disk.
 
-**Playback flow per stem**: `vocals sourceSlot startFrac endFrac stretchRatio segDurMs` arrives → find src slot → if not loaded, load it (`read` message to `buffer~`) → `triggerCompose()` → `fluid.bufcompose~` copies segment → `ring_done` callback → swap ring active/staging → send `vocals ringSlot segDurMs stretchRatio` to `slot_router.js`.
+**Playback flow per stem**: `vocals sourceSlot startFrac endFrac stretchRatio segDurMs` arrives → find src slot → if not loaded, load it → `triggerCompose()` → `fluid.bufcompose~` copies segment → `ring_done` callback → swap ring active/staging → send `vocals ringSlot segDurMs stretchRatio` to `slot_router.js`.
 
 **Bake snapshot**: `bakeSnapshot()` copies `ring_active → snap_` for all stems. `bakeRestore()` copies back. Ensures every training loop attempt starts from identical audio.
 
-**Slot→track map**: populated by `sourceTrack slotIdx ...nameParts` messages from `slicer.js`. Maps slot 0 → "DREPTO CE3o", slot 1 → "other track", etc.
+**Slot→track map**: populated by `sourceTrack slotIdx ...nameParts` messages from `slicer.js`.
 
 ### `slot_router.js`
 **Location:** `EBYS_INFRA/MAX/slot_router.js`
@@ -332,27 +330,25 @@ Receives `vocals ringSlot segDurMs stretchRatio` from `buffer_manager.js`:
 **Location:** `EBYS_INFRA/MAX/stretch_player.js`
 **Type:** Max JS object — **superseded**
 
-Earlier approach to time-stretching: used `fluid.bufselect~` → `fluid.bufstretch~` → `play~` chain. Replaced by the ring buffer + karma~ architecture (which does tape-style stretching without FluCoMa). Kept in the patch for reference/fallback.
+Earlier approach to time-stretching using `fluid.bufselect~` → `fluid.bufstretch~` → `play~` chain. Replaced by the ring buffer + karma~ architecture. Kept for reference.
 
 ### `track_loader.js`
 **Location:** `EBYS_INFRA/MAX/track_loader.js`
 **Type:** Max JS object — **superseded**
 
-Older multi-track loader. Scanned `htdemucs/` at startup, sorted tracks alphabetically (important — slicer.js uses the same sort for slot assignment), and sent `read` messages to `play_N_*` buffers. The `play_*` buffer naming convention was replaced by `src_*` + `ring_*` in the ring buffer upgrade; `buffer_manager.js` now handles this. Kept for reference.
+Older multi-track loader. The `play_*` buffer naming convention was replaced by `src_*` + `ring_*` in the ring buffer upgrade; `buffer_manager.js` now handles this. Kept for reference.
 
 ### `bake_manager.js`
 **Location:** `EBYS_INFRA/MAX/bake_manager.js`
 **Type:** Max JS object (`js bake_manager.js`)
 
-Handles the training snapshot system for the `:bake` workflow. `bakeSnapshot()` copies all ring buffers to snap buffers at `:bake` start. `bakeRestore()` copies back at every loop reset. This guarantees every training iteration starts from identical audio so the model only sees the effect of command changes, not audio drift.
-
-Note: `bake_manager.js` uses `fluid.bufcompose~` via 16 outlets. `buffer_manager.js` also has bake logic built in (outlets 14–17) with simplified single-snap-per-stem approach. The two coexist in the patch; `buffer_manager.js` is the current path.
+Handles the training snapshot system for the `:bake` workflow. `bakeSnapshot()` copies all ring buffers to snap buffers at `:bake` start. `bakeRestore()` copies back at every loop reset. Guarantees every training iteration starts from identical audio so the model only sees the effect of command changes, not audio drift.
 
 ### `clear_stems.js`
 **Location:** `EBYS_INFRA/MAX/clear_stems.js`
 **Type:** Max JS object
 
-Deletes all `.wav` files from the stems folder path (hardcoded to an old Desktop path). One-shot utility for resetting the stems library during development. Path is stale — not used in production.
+Deletes all `.wav` files from the stems folder. One-shot utility for resetting the stems library during development.
 
 ---
 
@@ -362,47 +358,35 @@ Deletes all `.wav` files from the stems folder path (hardcoded to an old Desktop
 **Location:** `EBYS_INFRA/MAX/cricket.js`
 **Type:** Max Node.js object (`node.script cricket.js`)
 
-EBYS's AI personality. Bridges Max to a locally running Ollama LLM (default: `llama3.1:latest`). 
+EBYS's AI personality. Bridges Max to a locally running Ollama LLM (default: `llama3.1:latest`).
 
-Receives `ask <text>` from Max. Sends to Ollama `/api/chat` with a detailed system prompt that describes: what Cricket is (a dry, present DJ personality), what all the engine parameters mean, a translation guide (e.g. "sparse → setSegmentBars 8, setStayProb 0.5"), and how to mix prose and commands in the same response.
+Receives `ask <text>` from Max. Sends to Ollama `/api/chat` with a detailed system prompt describing: what Cricket is (a dry, present DJ personality), all engine parameters and their effect, a translation guide (e.g. "sparse → setSegmentBars 8, setStayProb 0.5"), and how to mix prose and commands in the same response.
 
-Ollama returns a text response. `cricket.js` parses each line: lines that look like engine commands (e.g. `setSegmentBars 2`) are emitted as Max atoms via outlet 0 → `route` object → correct parameter handler. Lines that are prose are also emitted (for the TUI to display as Cricket's "speech").
-
-The model never sees the commands being sent — only users see Cricket's words, so it can narrate what it's doing.
+Ollama returns text. `cricket.js` parses each line: lines that look like engine commands are emitted as Max atoms via outlet 0 → `route` object → correct parameter handler. Prose lines are also emitted for the TUI to display as Cricket's speech.
 
 ### `TUI/cricket-voice.js`
 **Location:** `EBYS_INFRA/TUI/cricket-voice.js`
 **Type:** Standalone Node.js script
 
-Training session tool for building Cricket's voice. You type freely; everything is saved to `voice_samples.md`. Commands:
-- `:bake` — sends samples to Ollama to distill a personality profile into `voice.md`
-- `:bakefranglais` — bakes Q&A examples into an Ollama `Modelfile`
-- `:rule "..."` — adds a behavioral rule to `rules.md`
-
-Not used during live performance — only for training/persona development.
+Training session tool for building Cricket's voice. Everything you type is saved to `voice_samples.md`. Commands: `:bake` distills samples into `voice.md`, `:rule "..."` adds a behavioral rule, `:bakefranglais` bakes Q&A examples into an Ollama Modelfile. Not used during live performance.
 
 ### `TUI/test-ollama.js`
 **Location:** `EBYS_INFRA/TUI/test-ollama.js`
 **Type:** Standalone Node.js diagnostic script
 
-Quick Ollama connectivity test. Lists available models, sends a test message, and prints which model string to use in `sdj-tui.js CONFIG.ollama_model`.
+Quick Ollama connectivity test. Lists available models and sends a test message. Prints which model string to use in `sdj-tui.js`.
 
 ### `convert_bakes.py`
 **Location:** `EBYS_INFRA/convert_bakes.py`
 **Type:** Python script
 
-Converts `training_log.jsonl` (raw `:bake` snapshots from live sessions) into `cricket_finetune.jsonl` (MLX/Llama fine-tuning format). Each bake snapshot becomes one training example: intent + live descriptor state → final engine commands. Includes user corrections in the ground truth.
+Converts `training_log.jsonl` (raw `:bake` snapshots from live sessions) into `cricket_finetune.jsonl` (MLX/Llama fine-tuning format). Each bake becomes one training example: intent + live descriptor state → final engine commands.
 
 ### `finetune.sh`
 **Location:** `EBYS_INFRA/finetune.sh`
 **Type:** Shell script
 
-End-to-end fine-tuning pipeline for Cricket on Apple Silicon:
-1. Calls `convert_bakes.py` to prepare training data
-2. Runs `mlx_lm.lora` (MLX LoRA fine-tuning, batch=1, 8 layers, 600 iters)
-3. Saves adapter to `cricket_lora/`
-
-Requires 200+ bakes for meaningful results. Takes 1-3 hours on Apple Silicon. The trained adapter is local-only (never uploaded).
+End-to-end fine-tuning pipeline for Cricket on Apple Silicon using MLX LoRA. Converts bakes, runs `mlx_lm.lora` (batch=1, 8 layers, 600 iters), saves adapter to `cricket_lora/`. Requires 200+ bakes. Takes 1–3 hours.
 
 ---
 
@@ -413,38 +397,23 @@ Requires 200+ bakes for meaningful results. Takes 1-3 hours on Apple Silicon. Th
 **Type:** Standalone Node.js app (`node sdj-tui.js`)
 **Dependencies:** `blessed` (terminal UI), `ws` (WebSocket)
 
-The control surface for EBYS. A rich terminal dashboard showing:
-- Live descriptor readouts per stem (C, S, E, F, P, H, T) with trend arrows
-- Slice position bar, segment duration, BPM, key
-- Mix loudness (LUFS, dBFS)
-- Active genre label
-- System log
+The control surface for EBYS. A rich terminal dashboard showing live descriptor readouts per stem (C, S, E, F, P, H, T) with trend arrows, slice position bar, segment duration, BPM, key, mix loudness (LUFS, dBFS), and active genre label.
 
-Connects to `ws_server.js` on port 8080. On connect: sends `buildIndex` if analysis is done. Reconnects every 3s on disconnect.
+Connects to `ws_server.js` on port 8080. On connect, sends `buildIndex` if analysis is done. Reconnects every 3s on disconnect.
 
-**Command input**: user types commands that are sent to Max via WebSocket:
+**Command input**: user types commands sent to Max via WebSocket:
 - `:bars 2` → `setSegmentBars 2` → slicer.js
-- `:brighter` → `setWeight C 3.0, setDirPref C 1` → slicer.js
-- `:bake` → saves a snapshot to `training_log.jsonl`
-- `:pitchShift melody 3` → `pitchShift melody 3` → ws_server → slot_router.js
-- `:start` / `:stop`
+- `:pitchShift melody 3` → slot_router.js
+- `:bake` → saves snapshot to `training_log.jsonl`
 - Natural language → sent to Cricket (Ollama) → engine commands back
-
-Also sends `:buildIndex` after a new track is analyzed (detected via `streamUpdated` WebSocket event).
-
-**Genre display**: pre-loads `genres.json` at startup to show genre labels alongside stem descriptors.
-
-**Follow graph**: internal model of which stems "follow" which — allows asymmetric cross-stem influence weighting.
 
 ---
 
 ## 9. Data Files Reference
 
 ### `analysis_library.json`
-**Location:** `EBYS_INFRA/MAX/`
-**Size:** ~1MB
-**Written by:** `slice_writer.js`
-**Read by:** `ws_server.js` (prepareLibraryDict), `analyze_reader.js` (loadRegistry)
+**Location:** `EBYS_INFRA/MAX/` | **Size:** ~1MB
+**Written by:** `slice_writer.js` | **Read by:** `ws_server.js`, `analyze_reader.js`
 
 Raw FluCoMa analysis output. One entry per stem file. Structure:
 ```json
@@ -453,7 +422,7 @@ Raw FluCoMa analysis output. One entry per stem file. Structure:
     "vocals": {
       "metadata": { "track_name": "...", "BPM": 128, "BPM_confidence": 0.91, "key": "C major" },
       "slices": {
-        "slice_0001": { "time": 0.023, "C": 2300, "E": -24.1, "F": 0.42, "P": 440, "H": 0.7, "M0": ..., "M5": ... }
+        "slice_0001": { "time": 0.023, "C": 2300, "E": -24.1, "F": 0.42, "P": 440, "H": 0.7, "M0": "...", "M5": "..." }
       }
     }
   }
@@ -461,85 +430,52 @@ Raw FluCoMa analysis output. One entry per stem file. Structure:
 ```
 
 ### `ebys_index.json`
-**Location:** `EBYS_INFRA/MAX/`
-**Size:** ~2.8MB (larger than analysis_library — adds derived fields)
-**Written by:** `slicer.js` (via saveIdxChunk → ws_server.js)
-**Read by:** `ws_server.js` (cached, sent to slicer on TUI connect)
+**Location:** `EBYS_INFRA/MAX/` | **Size:** ~2.8MB
+**Written by:** `slicer.js` (via saveIdxChunk → ws_server.js) | **Read by:** `ws_server.js`
 
-The pre-built slice database. Extends `analysis_library.json` with computed fields: UMAP 2D coordinates, tension values (tC, tE, tF, tP, tH, tT), genre tags, sourceTrack name per slice, delta values (descriptor change from previous slice). This is what slicer.js indexes for fast lookup — rebuilding it takes ~10s (FluCoMa + t-SNE), so it's cached and only rebuilt when new tracks are added.
+The pre-built slice database. Extends `analysis_library.json` with computed fields: UMAP 2D coordinates, tension values (tC, tE, tF, tP, tH, tT), genre tags, sourceTrack name per slice, delta values. This is what slicer.js indexes for fast lookup — rebuilding takes ~10s, so it's cached and only rebuilt when new tracks are added. It is **larger** than `analysis_library.json` because it adds derived fields, not compresses them.
 
 ### `downbeats.json`
 **Location:** `EBYS_INFRA/` (NOT in MAX/)
-**Written by:** `madmom_tagger.py`
-**Read by:** `ws_server.js` (sends via downbeatchunk on TUI connect) → `slicer.js`
+**Written by:** `madmom_tagger.py` | **Read by:** `ws_server.js` → `slicer.js`
 
-Musical timing data per track:
-```json
-{
-  "DREPTO CE3o": {
-    "meter": 4,
-    "bpm": 128.3,
-    "avgBarMs": 1873.2,
-    "downbeats_ms": [0.0, 1873.2, 3746.4, ...],
-    "confidence": 0.94
-  }
-}
-```
-slicer.js uses this to classify slices as "near-downbeat" or not. Near-downbeat slices go into the `aligned[]` pool (preferred for segment transitions). Keyed by source track name (e.g. `"DREPTO CE3o"` not `"DREPTO CE3o_vocals.wav"`).
+Musical timing data per track. slicer.js uses this to classify slices as "near-downbeat" (→ `aligned[]` pool, preferred for transitions) or not (→ `free[]` pool). Keyed by source track name (e.g. `"DREPTO CE3o"`, not `"DREPTO CE3o_vocals.wav"`).
 
 ### `umap_coords.json`
 **Location:** `EBYS_INFRA/MAX/`
-**Written by:** `ws_server.js` (from tsne_worker results)
-**Read by:** `slicer.js` (merged into ebys_index)
+**Written by:** `ws_server.js` (from tsne_worker results) | **Read by:** `slicer.js`
 
-2D t-SNE coordinates for every slice, per stem:
-```json
-{ "vocals": { "slice_0001": [12.3, -4.7], ... }, "melody": {...} }
-```
-Used by the TUI spatial navigator so the user can click/drag to select slices by sonic similarity.
+2D t-SNE coordinates for every slice per stem. Used by the TUI spatial navigator so similar-sounding slices cluster together visually.
 
 ### `stem_ranges.json`
 **Location:** `EBYS_INFRA/MAX/`
-**Written by:** `ws_server.js` (computeAndWriteUMAP, synchronous phase)
-**Read by:** `slicer.js`
+**Written by:** `ws_server.js` | **Read by:** `slicer.js`
 
-Descriptor min/max per stem, used for normalizing values before UMAP display and for the TUI's descriptor bar scaling:
-```json
-{ "vocals": { "C": { "min": 669, "max": 12152 }, "E": { "min": -53.6, "max": -18.8 }, ... } }
-```
+Descriptor min/max per stem. Used for normalizing values before UMAP display and for TUI descriptor bar scaling.
 
 ### `genres.json`
 **Location:** `EBYS_INFRA/`
-**Written by:** `genre_tagger.py`
-**Read by:** `ws_server.js` (sent as genrechunk to slicer), `sdj-tui.js` (direct read)
+**Written by:** `genre_tagger.py` | **Read by:** `ws_server.js`, `sdj-tui.js`
 
-Genre classification results per track name. Top-N genres with confidence scores from the Discogs-EffNet 400-class model.
+Genre classification results per track. Top-N genres with confidence scores from the Discogs-EffNet 400-class model.
 
 ### `dict_analysis.json`
 **Location:** `EBYS_INFRA/MAX/`
-**Written by:** Max `dict` export
 
-A Max dict export snapshot — likely a manual debug export of the `analysisLib` dict. Not used in the automated pipeline.
+Manual debug export of the `analysisLib` Max dict. Not part of the automated pipeline.
 
 ### `ebys_feed_vocals.json`
 **Location:** `EBYS_INFRA/MAX/`
 
-Partial analysis export for the vocals stem only. Likely a debug snapshot or test feed. Not part of the main pipeline.
-
-### `archive/analysis/features.json`
-**Location:** `EBYS_INFRA/archive/analysis/`
-
-Archived early analysis format. Predates the current `analysis_library.json` schema. Not used.
+Partial analysis export for the vocals stem only. Debug snapshot, not part of the main pipeline.
 
 ### `package.json` (MAX)
-**Location:** `EBYS_INFRA/MAX/package.json`
-**Dependencies:** `ws ^8.21.0`
+**Location:** `EBYS_INFRA/MAX/` | **Dependencies:** `ws ^8.21.0`
 
-Node.js package manifest for the Max-side scripts. The `ws` package is used by `ws_server.js` for the WebSocket server.
+Node.js manifest for Max-side scripts. `ws` is used by `ws_server.js` for the WebSocket server.
 
 ### `package.json` (TUI)
-**Location:** `EBYS_INFRA/TUI/package.json`
-**Dependencies:** `blessed ^0.1.81`, `ws ^8.21.0`
+**Location:** `EBYS_INFRA/TUI/` | **Dependencies:** `blessed ^0.1.81`, `ws ^8.21.0`
 
 TUI Node.js manifest. `blessed` for the terminal UI, `ws` for the WebSocket client.
 
@@ -547,7 +483,7 @@ TUI Node.js manifest. `blessed` for the terminal UI, `ws` for the WebSocket clie
 **Location:** `EBYS_INFRA/essentia_models/`
 **Written by:** `extract_labels.py` or downloaded
 
-The 400 genre class names for the Discogs-EffNet model. Without this file, `genre_tagger.py` falls back to numeric class IDs (`class_001`, etc.).
+The 400 genre class names for the Discogs-EffNet model. Without this, `genre_tagger.py` falls back to numeric class IDs.
 
 ---
 
@@ -555,29 +491,25 @@ The 400 genre class names for the Discogs-EffNet model. Without this file, `genr
 
 ### Patch Evolution Scripts (`patch_*.py`)
 
-These Python scripts directly edit `ebys-analyze.maxpat` (which is a JSON file) to add/remove/rewire objects without touching the Max GUI. Each creates a `.bak` before modifying.
+These Python scripts directly edit `ebys-analyze.maxpat` (a JSON file) to add/remove/rewire objects without touching the Max GUI. Each creates a `.bak` before modifying.
 
 | Script | What it did |
 |---|---|
-| `patch_multitrack_upgrade.py` | Renamed `play_*` → `play_0_*`, added `play_1_*` slot 1 buffers, wired `slot_router.js`, removed old route→unpack routing |
-| `patch_ring_buffer_upgrade.py` | Renamed `play_0/1_*` → `src_0/1_*`, added `ring_0/1_*` buffers, replaced `track_loader.js` with `buffer_manager.js`, added `fluid.bufcompose~` objects |
+| `patch_multitrack_upgrade.py` | Renamed `play_*` → `play_0_*`, added slot 1 buffers, wired `slot_router.js`, removed old route→unpack routing |
+| `patch_ring_buffer_upgrade.py` | Renamed `play_0/1_*` → `src_0/1_*`, added `ring_0/1_*` buffers, replaced `track_loader.js` with `buffer_manager.js` |
 | `patch_cleanup.py` | Removed 25 dead objects (orphaned unpack/*/- chains, label boxes) left after the multitrack upgrade |
-| `patch_tighten2.py` | UI tightening pass 2 |
-| `patch_tighten3.py` | UI tightening pass 3 |
-| `patch_tighten4.py` | UI tightening pass 4 |
+| `patch_tighten2/3/4.py` | UI tightening passes |
 | `patch_bake_snapshot.py` | Added bake snapshot wiring (snap_* buffers, bake_manager.js connections) |
 
 ### `extract_labels.py`
 **Location:** `EBYS_INFRA/extract_labels.py`
-**Type:** Utility script
 
-Attempts to extract the 400 genre class names from the Essentia `.pb` model files. Tries three methods: TensorFlow SignatureDef extraction, GitHub download, and class-count inference. Writes `genre_discogs400_labels.json`. Run once during setup.
+Attempts to extract the 400 genre class names from the Essentia `.pb` model files. Tries TensorFlow SignatureDef extraction, GitHub download, and class-count inference. Run once during setup.
 
 ### `ai_edit_file.py` / `ai_readme.py`
 **Location:** `EBYS_INFRA/`
-**Type:** Ollama-powered utility scripts
 
-Small developer tools that use Ollama locally: `ai_edit_file.py` rewrites a text file with AI assistance (shows a preview, asks for confirmation before overwriting). `ai_readme.py` starts a Q&A loop about the README. Neither is part of the EBYS runtime.
+Developer tools using local Ollama. `ai_edit_file.py` rewrites a text file with AI assistance (preview before overwrite). `ai_readme.py` opens a Q&A loop about the README. Neither is part of the EBYS runtime.
 
 ---
 
@@ -592,17 +524,13 @@ Runs `watch_demucs.py` automatically at login and keeps it alive if it crashes. 
 cp com.ebys.watchdemucs.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.ebys.watchdemucs.plist
 ```
-
-Logs stdout and stderr to `EBYS_INFRA/logs/watchdemucs.log`. Uses `demucs_env/bin/python3` (the venv that has torch).
-
-### `finetune.sh`
-See Stage 5 (Cricket). Shell script for MLX LoRA fine-tuning of the Cricket model on Apple Silicon.
+Logs to `EBYS_INFRA/logs/watchdemucs.log`.
 
 ---
 
 ## 12. Archive / BAK Files
 
-These are automatic backups created by the patch evolution scripts before each modification. They capture the patch state at each architectural milestone and can be used to roll back.
+Automatic backups created by the patch evolution scripts before each modification.
 
 | File | State captured |
 |---|---|
