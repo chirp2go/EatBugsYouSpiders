@@ -7,7 +7,7 @@
 ## Table of Contents
 
 1. [System Overview](#1-system-overview)
-2. [Pipeline at a Glance](#2-pipeline-at-a-glance)
+2. [Pipeline at a Glance](#2-pipeline)
 3. [Stage 1 — Ingestion](#3-stage-1--ingestion)
 4. [Stage 2 — Analysis](#4-stage-2--analysis)
 5. [Stage 3 — Index Building](#5-stage-3--index-building)
@@ -47,7 +47,7 @@ EBYS has three independent processes that communicate over WebSocket:
 
 ---
 
-## 2. Pipeline at a Glance
+## 2. Pipeline
 
 ```
 Drop audio file
