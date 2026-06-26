@@ -13,8 +13,6 @@ Licence : AGPL-3.0
 - [`ARCHITECTURE_REF.md`](./ARCHITECTURE_REF.md) — file-by-file reference of every script, data file, and Max object in the system.
 - [`STATEMENT.md`](./STATEMENT.md) — chirp!
 
-  <img width="625" height="773" alt="hardware_proto_A1" src="https://github.com/user-attachments/assets/75e1e8c5-884d-4059-8d50-44ab877fbcbe" />
-
 ## Licence
 
 Copyright © 2026 Eat Bugs You Spider!
