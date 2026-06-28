@@ -14,42 +14,44 @@ Two units can drift apart independently — different weights, different entropy
 
 ## The Missile Switch
 
-A safety-cover toggle switch on the EBYS-A1 panel is the primary LINK control. What it sends depends on the current selection context, built by drilling down through the channel strip controls before firing.
+A spring-return toggle switch with a safety cover on the EBYS-A1 panel is the primary LINK control. The switch snaps back automatically when released — no "did I leave it on" ambiguity mid-set. Lift the cover, flip and hold to send, release to snap back.
+
+What it sends depends on the last control touched before firing.
 
 ---
 
 ## Send Scope — Hierarchical Drill-Down
 
-The scope of a missile switch fire is determined by how far down the selection tree the DJ has navigated:
+The scope of a missile switch fire is determined by the last control touched before firing. Whatever you last touched is what gets sent — no holding required.
 
 ```
 (no context)
     → flip switch = last touched parameter only
 
-hold track button (button under channel fader)
+touch track button (button under channel fader)
     → flip switch = full descriptor state for that channel
                     (all weights + all dirs)
 
-hold track button → press 1 (setWeight) or 2 (setDir)
+touch track button → press 1 (setWeight) or 2 (setDir)
     → flip switch = all weights OR all dirs for that channel
 
-hold track button → press 1 or 2 → touch descriptor encoder (e.g. C)
+touch track button → press 1 or 2 → touch descriptor encoder (e.g. C)
     → flip switch = single descriptor (e.g. setWeight C)
 ```
 
-Each step narrows the scope. The missile switch fires at whatever level the DJ stopped at.
+Each step narrows the scope. The missile switch fires at whatever level the DJ stopped at. Touching the track button counts as the last touched control — press it, let go, then flip the switch. The hold is not required.
 
 ### Examples
 
 ```
-flip switch (no context)            →  sends: setWeight C 3.0   (last touched)
-hold VOC + flip                     →  sends: all VOC weights + dirs
-hold VOC + press 1 + flip           →  sends: all VOC setWeights
-hold VOC + press 1 + touch C + flip →  sends: setWeight VOC C 3.0
+flip switch (no context)              →  sends: setWeight C 3.0   (last touched)
+touch VOC + flip                      →  sends: all VOC weights + dirs
+touch VOC + press 1 + flip            →  sends: all VOC setWeights
+touch VOC + press 1 + touch C + flip  →  sends: setWeight VOC C 3.0
 ```
 
 ### Full state dump
-Hold the missile switch for 2 seconds (no channel context needed). Sends the complete current state of all parameters:
+Flip and hold the missile switch for 2 seconds (no channel context needed). Sends the complete current state of all parameters:
 
 ```
 setTempo 124.0
