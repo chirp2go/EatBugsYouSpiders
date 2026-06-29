@@ -18,6 +18,37 @@ A spring-return toggle switch with a safety cover on the EBYS-A1 panel is the pr
 
 What it sends depends on the last control touched before firing.
 
+### Link Weight Knob
+
+A dedicated knob sits next to the missile switch. It sets the blend weight of the transmission — how strongly the sender's state overwrites the receiver's.
+
+```
+weight = 1.0  → complete overwrite. Receiver adopts sender's state entirely.
+weight = 0.5  → blend. Halfway between sender and receiver's state.
+weight = 0.1  → whisper. Barely influenced by the sender's DNA.
+```
+
+The receiving deck blends the incoming state at the proposed weight:
+
+```
+received_value = (sender_value × weight) + (own_value × (1 - weight))
+```
+
+The weight is set by the sender before firing. The receiver sees the proposed weight and can accept or reject the whole transmission — but cannot modify the weight.
+
+**TUI command:**
+```
+setLinkWeight <0.0–1.0>
+```
+
+The weight is held until changed. Full transmission sequence:
+
+```
+setLinkWeight 0.5     → set blend at 50%
+touch context         → select what to send
+flip missile switch   → fire
+```
+
 ---
 
 ## Send Scope — Hierarchical Drill-Down
@@ -109,10 +140,13 @@ The receiving unit displays incoming transmissions on the TUI screen:
 ```
 INCOMING ─────────────────────
   from: EBYS-A1 [unit name]
+  weight: 50%
   param: setWeight C 3.0
   [ACCEPT]  [REJECT]
 ──────────────────────────────
 ```
+
+The receiver sees the weight the sender proposed. Accept applies the blend at that weight. Reject discards the transmission entirely. The receiver cannot modify the weight.
 
 A second missile switch on the receiving unit accepts or rejects. Or the unit can be set to **auto-accept** mode — all incoming transmissions apply immediately without confirmation.
 
@@ -147,6 +181,23 @@ EBYS LINK handles generative state. Ableton Link handles clock. They run in para
 More than two units on the same network form a LINK session. Each missile switch tap broadcasts to all connected units. Each unit independently accepts or rejects incoming transmissions.
 
 In a multi-unit setup, the screen shows the source unit name so the receiving DJ knows who is sending.
+
+---
+
+## ▲▼ — Listener-Side Split Control
+
+▲▼ is not a hardware control on the DJ deck. It lives on the listener's interface — the radio or stream page. When a listener tips a collaborative set, they choose which role they want to reward.
+
+```
+▲  I'm tipping the leader — the DJ who shaped the other's system.
+▼  I'm tipping the follower — the DJ who received and integrated the other's state.
+```
+
+▲▼ shows both pyramids together — the normal hierarchy above, the inverted below. Not an arrow. A choice between two philosophies of performance.
+
+The concept is servant leadership — wu wei, comping. The one who listens, adapts, and carries the other's state creates value through receptiveness rather than imposition. The crowd decides which is worth more, tip by tip.
+
+The LINK follow graph is live throughout the set. Each tip reads the current state of that graph and applies the listener's ▲▼ choice to split accordingly. The final split between DJs is the accumulated result of all tips cast.
 
 ---
 

@@ -1,14 +1,12 @@
 # Split Equation — How Tips Are Divided
 
-When a listener tips a mix, the payment is split between the curator (DJ) and the contributing artists.
+When a listener tips a mix, the payment is split between the curator (DJ) and the contributing artists based on how much the curator transformed the source material.
 
 ```
 Curator floor:  40%
-Artist floor:   40%
-Variable pool:  20%
+Artist floor:   20%
+Variable pool:  40%
 ```
-
-The variable pool moves between curator and artists in two steps — stem mixing, then sustained manipulation. If neither condition is met, artists keep the variable pool.
 
 ---
 
@@ -27,82 +25,56 @@ EBYS has full visibility into the mix at every moment:
 - Which slices are playing across all 4 stems (vocals, melody, bass, drums)
 - Which track each slice came from
 - How many distinct tracks are contributing (N)
+- Whether stems are drawing from different sources simultaneously
+- The full `followStem` graph — who is following who, and at what weight
+- The segment length per stem (`setSegmentBars`)
 - A timestamped log of every command sent during the session
 
 ---
 
-## Three Tiers
+## Four Levels of Transformation
+
+### Level 0 — Sequential
+One track at a time. All 4 stems from the same source. No mixing.
 
 ```
-N < 2,  no manipulation:        curator 40% / artists 60%
-N >= 2, no manipulation:        curator 50% / artists 50%
-N >= 2, manipulation present:   curator 60% / artists 40%
+curator 40% / artists 60%
 ```
 
-The crowd decides how good the set was. The system only checks whether the DJ showed up and kept working.
+**Detector:** N = 1 throughout the set.
 
 ---
 
-## Tier 1 — No Stem Mixing
-
-The curator played tracks without combining sources.
+### Level 1 — Lightly Layered
+Stems occasionally draw from different sources simultaneously, but it's not sustained. The DJ is dipping into mixing but mostly playing tracks through.
 
 ```
-curator_share = 0.40
-artist_pool   = 0.60
+curator 45% / artists 55%
 ```
+
+**Detector:** stems diverge simultaneously (different source tracks playing at the same moment across stems) for less than 40% of the set.
 
 ---
 
-## Tier 2 — Stem Mixing (N >= 2)
-
-The curator mixed slices from at least 2 distinct source tracks simultaneously across the 4 stems. The 20% variable pool splits evenly.
+### Level 2 — Heavily Layered
+Stems regularly draw from different sources simultaneously, sustained throughout the set. N>=2 is the norm, not the exception.
 
 ```
-curator_share = 0.50
-artist_pool   = 0.50
+curator 65% / artists 35%
 ```
+
+**Detector:** stems diverge simultaneously for 40% or more of the set.
 
 ---
 
-## Tier 3 — Stem Mixing + Present Manipulation
-
-The curator mixed stems AND sustained active manipulation throughout the set. The full variable pool goes to the curator.
-
-```
-curator_share = 0.60
-artist_pool   = 0.40
-```
-
----
-
-## What Is Present Manipulation?
-
-Present manipulation confirms that the DJ kept working throughout the set — not just at the start.
-
-**Step 1 — Divide the set into 10-minute windows.**
-
-**Step 2 — Check command presence per window.**
-At least one command must have been sent in that window for it to count.
-
-**Step 3 — Apply the 60% threshold.**
-Commands must appear in at least 60% of all windows.
+### Level 3 — Composed
+The DJ breaks the natural structure of the source material and builds their own. Different segment lengths per stem, follow graph actively rewired during the set, N growing deliberately over time. The sources are raw material for a new form.
 
 ```
-active_windows = count of 10-min windows with at least 1 command
-total_windows  = total 10-min windows in the set
-manipulation_present = (active_windows / total_windows) >= 0.60
+curator 80% / artists 20%
 ```
 
-A 2-hour set = 12 windows. The DJ must have sent commands in at least 7 of those 12 windows. The number of commands per window doesn't matter — one command qualifies a window. What matters is that the DJ was present and moving across the set.
-
-**Step 4 — Check for directional contrast.**
-Parameters must have moved in different directions at some point during the set — not just a fixed ramp from A to B. At least one parameter must show a direction change (up then down, or down then up). This confirms the DJ was responding to the music, not executing a preset plan.
-
-Both conditions must be true for manipulation to be considered present:
-```
-manipulation_present = recurrence AND contrast
-```
+**Detector:** Level 2 conditions met + `setSegmentBars` varies across stems + follow graph changes during the set.
 
 ---
 
@@ -185,14 +157,54 @@ bass   = 20% + (20% × 0)     = 20.0%
 
 ---
 
+### Level 4 — Collaborative
+Two or more EBYS units in dialogue through the LINK protocol. The structure is no longer one DJ's alone — it's a conversation between systems. Active LINK transmissions accepted between units during the set.
+
+```
+curator pool: 90% / artists: 10%
+```
+
+The 90% curator pool is split between DJs by the crowd — through the ▲▼ tipping mechanic.
+
+**▲▼ — Listener-Side Split Control**
+
+The listener doesn't know which DJ is which physically. They tip the overall mix, but choose which role they want to reward:
+
+```
+▲  I'm tipping the leader — the DJ who shaped the other's system.
+▼  I'm tipping the follower — the DJ who received and integrated the other's state.
+```
+
+The listener interface:
+```
+[TIP]  ▲ 70/30  |  ▼ 30/70
+```
+
+Each tip carries its own ▲▼ weight and adds to a running tally. The split is not predetermined — it emerges from the crowd's collective votes over the set.
+
+**At the moment a tip is punched**, the system reads the current state of the LINK follow graph — who has sent more accepted transmissions, who has received more — and applies the listener's ▲▼ choice to determine the split for that tip.
+
+```
+tip punched → read current LINK follow graph → apply ▲▼ choice → split accordingly
+
+DJ A total = sum of all ▲ shares across all tips
+DJ B total = sum of all ▼ shares across all tips
+```
+
+The follow graph between DJs is live — it shifts throughout the set as transmissions are sent and accepted. Each tip reflects the actual state of that graph at the moment it was cast.
+
+Same logic as the stem follow graph in the artist split — just one level up, between DJs instead of between stems. Follow graphs all the way down.
+
+---
+
 ## The Role at the Moment of the Tip
 
-The split is calculated at the moment the tip is sent — tier, manipulation state, and follow graph all read at that exact second. The math is local to the tip, the fairness is global over time.
+The level is calculated at the moment the tip is sent — from the full session history up to that point. The math is local to the tip, the fairness is global over time.
 
 ---
 
 ## Open Questions
 
-- Should the window size be configurable per deployment, or fixed at 10 minutes?
-- Should short sets (under 30 minutes) use a smaller window size?
-- All floor values (40/40/20) are placeholders — calibrate after real sessions.
+- 40% threshold for Level 1→2 is a placeholder — calibrate from real sessions.
+- Should Level 3 require all three conditions, or just two of the three?
+- All percentage values are configurable per deployment — these are defaults, not mandates.
