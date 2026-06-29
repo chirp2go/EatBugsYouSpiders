@@ -4,8 +4,8 @@ When a listener tips a mix, the payment is split between the curator (DJ) and th
 
 ```
 Curator floor:  40%
-Artist floor:   20%
-Variable pool:  40%
+Artist floor:   10%
+Variable pool:  50%
 ```
 
 ---
@@ -71,7 +71,7 @@ curator 65% / artists 35%
 The DJ breaks the natural structure of the source material and builds their own. Different segment lengths per stem, follow graph actively rewired during the set, N growing deliberately over time. The sources are raw material for a new form.
 
 ```
-curator 80% / artists 20%
+curator 90% / artists 10%
 ```
 
 **Detector:** Level 2 conditions met + `setSegmentBars` varies across stems + follow graph changes during the set.
@@ -168,7 +168,7 @@ The curator pool follows the same level rules as a solo set:
 Level 0 collaborative: curator 40% / artists 60%
 Level 1 collaborative: curator 45% / artists 55%
 Level 2 collaborative: curator 65% / artists 35%
-Level 3 collaborative: curator 80% / artists 20%
+Level 3 collaborative: curator 90% / artists 10%
 ```
 
 LINK activity doesn't affect the level — it only affects how the curator pool is divided between the DJs.
