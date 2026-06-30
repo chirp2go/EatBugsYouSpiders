@@ -2,10 +2,12 @@
 
 When a listener tips a mix, the payment is split between the curator (DJ) and the contributing artists based on how much the curator transformed the source material.
 
+**This equation is a proposal, not a mandate.** All values are placeholders — a sensible default that any deployment can override. A label radio might set different floors. A DJ might negotiate a custom split directly with artists. The system enforces whatever is agreed upon. EBYS doesn't decide — it calculates.
+
 ```
-Curator floor:  40%
-Artist floor:   10%
-Variable pool:  50%
+Curator floor:  40%   ← configurable
+Artist floor:   10%   ← configurable
+Variable pool:  50%   ← configurable
 ```
 
 ---
@@ -74,13 +76,26 @@ The DJ breaks the natural structure of the source material and builds their own.
 curator 90% / artists 10%
 ```
 
-**Detector:** Level 2 conditions met + `setSegmentBars` varies across stems + follow graph changes during the set.
+**Detector:** Level 2 conditions met + N >= 4 distinct source tracks + `setSegmentBars` variance across stems >= 20.0 (e.g. VOC=4, MEL=8, BAS=8, DRM=16 → variance ≈ 19; fractured structure, not just a nudge).
+
+---
+
+## Pool Structure — Same Logic for Both Pools
+
+Both the curator pool (collaborative) and the artist pool follow the same 60/40 structure:
+
+```
+60% — Floor, split equally (always, regardless of follow graph)
+40% — Variable, weighted by follow graph, affected by ▲⬢▼
+```
+
+The crowd's ▲⬢▼ choice only affects the 40% variable portion. The 60% floor is untouched.
 
 ---
 
 ## The Artist Split
 
-Artists split their pool using an 80/20 rule. 80% is distributed equally — every stem gets paid just for being present. The remaining 20% is distributed according to the follow graph. The more attention other stems point at you, the larger your share of that 20%.
+Artists split their pool using a 60/40 rule. 60% is distributed equally — every stem gets paid just for being present. The remaining 40% is distributed according to the follow graph, affected by the listener's ▲⬢▼ choice.
 
 **Variables:**
 - π_i = payout for stem i (as a fraction of the artist pool)
@@ -89,11 +104,9 @@ Artists split their pool using an 80/20 rule. 80% is distributed equally — eve
 - Φ = sum of all follow weights in the entire graph
 
 ```
-πᵢ = 0.2  +  0.2 · (Φᵢ / Φ)
-```
-
-```
-payout[i] = 0.2  +  0.2 * (sum_incoming[i] / total_follows)
+▲  πᵢ = 0.15  +  0.40 · (Φᵢ / Φ)          incoming follows rewarded
+▼  πᵢ = 0.15  +  0.40 · (outgoing_Φᵢ / Φ)  outgoing follows rewarded
+⬢  πᵢ = 0.25                                 equal split, graph ignored
 ```
 
 Existence share + proportional share of attention.
@@ -116,7 +129,7 @@ influence[stem] = sum of all follow(j → stem) for every j
 normalised[stem] = influence[stem] / sum(all influences)
 ```
 
-A stem with no incoming follows gets 0% of the influence pool — but still receives its full base share from the 80% layer.
+A stem with no incoming follows gets 0% of the influence pool — but still receives its full base share from the 60% floor.
 
 ---
 
@@ -145,12 +158,12 @@ vocals =   0 / 120 =  0%
 bass   =   0 / 120 =  0%
 ```
 
-**Step 3 — Final payout (base 80% + influence pool 20%):**
+**Step 3 — Final payout (base 60% + influence pool 40%):**
 ```
-drums  = 20% + (20% × 0.833) = 36.7%
-melody = 20% + (20% × 0.167) = 23.3%
-vocals = 20% + (20% × 0)     = 20.0%
-bass   = 20% + (20% × 0)     = 20.0%
+drums  = 15% + (40% × 0.833) = 48.3%
+melody = 15% + (40% × 0.167) = 21.7%
+vocals = 15% + (40% × 0)     = 15.0%
+bass   = 15% + (40% × 0)     = 15.0%
 ```
 
 **Total = 100%** ✓
@@ -165,69 +178,60 @@ The level is evaluated on the **combined output** of both decks — not per DJ. 
 The curator pool follows the same level rules as a solo set:
 
 ```
-Level 0 collaborative: curator 40% / artists 60%
-Level 1 collaborative: curator 45% / artists 55%
-Level 2 collaborative: curator 65% / artists 35%
-Level 3 collaborative: curator 90% / artists 10%
+Level 0 collaborative: curator 45% / artists 55%   (+5% collab bonus)
+Level 1 collaborative: curator 50% / artists 50%   (+5% collab bonus)
+Level 2 collaborative: curator 70% / artists 30%   (+5% collab bonus)
+Level 3 collaborative: curator 90% / artists 10%   (capped at artist floor)
 ```
 
 LINK activity doesn't affect the level — it only affects how the curator pool is divided between the DJs.
 
-The curator pool is split between DJs by the crowd — through the ▲▼= tipping mechanic.
+The curator pool is split between DJs by the crowd — through the ▲⬢▼ tipping mechanic.
 
-**▲▼= — Listener-Side Split Control**
+**▲⬢▼ — Listener-Side Split Control**
 
-The listener doesn't know which DJ is which physically. They tip the overall mix, but choose which role they want to reward. The choice cascades through both the DJ split and the artist split simultaneously.
-
-```
-▲  Leader earns more — DJs and stems being followed get more
-▼  Follower earns more — DJs and stems doing the following get more
-=  Equal — flat split across DJs and stems, follow graph ignored
-```
-
-The listener interface:
-```
-[TIP]  ▲  |  =  |  ▼
-```
-
-Each tip carries its own choice and adds to a running tally. The split is not predetermined — it emerges from the crowd's collective votes over the set.
-
-**At the moment a tip is punched**, the system reads the current state of both follow graphs — the LINK graph between DJs and the stem follow graph within each deck — and applies the listener's choice to determine the split.
+The listener tips the overall mix and chooses which role to reward. ▲⬢▼ only affects the **40% variable portion** of each pool — the 60% floor is always split equally and is never touched.
 
 ```
-tip punched → read current LINK follow graph + stem follow graph → apply ▲▼= → split accordingly
+[TIP]  ▲  |  ⬢  |  ▼
 ```
 
 ---
 
-**DJ level split:**
+**Curator pool (collaborative) — 60/40:**
 
 ```
-▲ → DJ with more outgoing accepted transmissions earns more
-▼ → DJ with more incoming accepted transmissions earns more
-=  → 50/50 between DJs
+60% — Floor, split equally between DJs regardless of follow graph
+40% — Weighted by LINK follow graph, affected by ▲⬢▼
+
+▲ → DJ with more outgoing accepted transmissions earns more of the 40%
+▼ → DJ with more incoming accepted transmissions earns more of the 40%
+⬢  → 40% split equally between DJs
 ```
 
 ---
 
-**Stem / artist level split:**
+**Artist pool — 60/40:**
 
 ```
-▲ → stems being followed by other stems earn more (incoming follows)
-    πᵢ = 0.2  +  0.2 · (Φᵢ / Φ)
+60% — Base, split equally across all stems regardless of follow graph
+40% — Weighted by stem follow graph, affected by ▲⬢▼
 
-▼ → stems doing the most following earn more (outgoing follows)
-    πᵢ = 0.2  +  0.2 · (outgoing_Φᵢ / Φ)
+▲ → stems being followed earn more of the 40% (incoming follows)
+    πᵢ = 0.15  +  0.40 · (Φᵢ / Φ)
 
-=  → equal split across all stems, follow graph ignored
+▼ → stems doing the most following earn more of the 40% (outgoing follows)
+    πᵢ = 0.15  +  0.40 · (outgoing_Φᵢ / Φ)
+
+⬢  → 40% split equally across all stems
     πᵢ = 0.25  for all stems
 ```
 
 ---
 
-The follow graphs are live — they shift throughout the set as transmissions are sent, accepted, and as followStem relationships change. Each tip reflects the actual state of both graphs at the moment it was cast.
+Both pools follow the same structure. The follow graphs are live — they shift throughout the set as transmissions are sent, accepted, and as followStem relationships change. Each tip reflects the actual state of both graphs at the moment it was cast.
 
-Same logic at every level of the system — follow graphs all the way down.
+Follow graphs all the way down.
 
 ---
 
@@ -239,6 +243,8 @@ The level is calculated at the moment the tip is sent — from the full session 
 
 ## Open Questions
 
-- 40% threshold for Level 1→2 is a placeholder — calibrate from real sessions.
+- 40% divergence threshold for Level 1→2 is a placeholder — calibrate from real sessions.
+- Variance threshold of 20.0 for Level 3 was derived from real bar values (e.g. VOC=4, MEL=8, BAS=8, DRM=16 ≈ 19) — adjust up or down based on observed sets.
+- N >= 4 threshold for Level 3 is a placeholder — requires all 4 stems drawing from different tracks simultaneously.
 - Should Level 3 require all three conditions, or just two of the three?
 - All percentage values are configurable per deployment — these are defaults, not mandates.
