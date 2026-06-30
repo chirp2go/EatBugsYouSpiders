@@ -5,6 +5,134 @@ Generative audio collage engine. Separates songs into stems, analyzes every tran
 
 ---
 
+## 0.1.7 — 2026-06-23
+
+### M/S Stereo + FX Send/Return Architecture
+
+#### Max patch — master bus restructure (`ebys-analyze.maxpat`)
+- **Single master bus** — removed per-stem `dac~ 1 2` (obj-712, 742, 772, 802). All four stems now sum into one stereo master via `+~` trees (obj-21000–21005). One `dac~ 1 2` (obj-21032) is the only speaker output.
+- **FX send (pre-M/S, mono)** — mono sum of four `*~ 0.7` pre-M/S outputs (obj-21050–21052) feeds `*~ 0` send gain (obj-21053), controlled by `receive fxsend1` (obj-21054). Output on `dac~ 3 4` (obj-21055) → physical pedal input.
+- **FX return** — `adc~ 3` (obj-21060) is the mono hardware return. `*~ 0` return gain (obj-21061) controlled by `receive fxreturn1` (obj-21062).
+- **Dry/wet crossfade (insert model)** — `!- 1` (obj-21072) computes `(1 − fxSend)` applied to master L/R dry gains (obj-21070, 21071). At 100% send, dry is muted — only the pedal return is heard. This is the insert model, not the parallel/studio model.
+- **Mono/stereo switchable pedal path** — `selector~ 2 1` objects (obj-21082, 21083) switch `dac~ 3/4` between: mono sum (fxStereo=0) or master L/R post-M/S (fxStereo=1). Return side: `selector~ 2 1` (obj-21092) selects between `adc~ 3` (mono) and `adc~ 4` (stereo R). `adc~ 3` always feeds L directly; the selector only controls R.
+- **`receive fxstereo` + `+ 1`** — `receive fxstereo` (obj-21085) → `+ 1` (obj-21086) converts boolean 0/1 to 1/2 (selector~ is 1-indexed). `send fxstereo` (obj-21087) driven from route outlet 14.
+- **Route extended** — obj-20101 `route` text extended with `fxstereo` as selector 15 (outlet 14).
+
+#### Max patch — M/S label fix
+- **6 mislabelled receive objects corrected** — drums column had melody labels and vice versa:
+  - `receive width_melody` → `receive width_drums` (x≈829)
+  - `receive panL_melody` → `receive panL_drums` (x≈698)
+  - `receive panR_melody` → `receive panR_drums` (x≈829)
+  - `receive width_drums` → `receive width_melody` (x≈1917)
+  - `receive panL_drums` → `receive panL_melody` (x≈1783)
+  - `receive panR_drums` → `receive panR_melody` (x≈1917)
+
+#### New file: `ms_router.js`
+- Routes TUI M/S and FX commands to Max `receive` objects via outlet 0 → route obj-20101 → send objects.
+- **`width <stem> <0–1>`** — M/S stereo width per stem (0=mono, 1=full wide). Sends `width_<stem>` to patch.
+- **`pan <stem> <-1–+1>`** — equal-power pan law (`L=cos((pan+1)π/4)`, `R=sin((pan+1)π/4)`). Sends `panL_<stem>` and `panR_<stem>`.
+- **`fxSend <0–1>`** — send level; also drives `(1−fxSend)` dry crossfade in patch.
+- **`fxReturn <0–1>`** — return level from hardware pedal.
+- **`fxStereo 0|1`** — mono/stereo pedal chain switch. Sends `fxstereo` → patch selector~ objects.
+- **`stemMS <track> <pan> <width>`** — called by slicer.js per-slice when `analysisDriven=true`; automatically updates pan/width from audio analysis.
+- **`analysisMode on|off`** — toggles `analysisDriven`. Off = fully manual `:width` / `:pan` control.
+- **`resend`** — re-pushes all current state to Max (useful after autowatch reload).
+- **`anything()`** — catch-all suppresses "can't handle message" warnings (ms_router sees all ws_server outlet 0 messages in parallel).
+
+#### `ws_server.js` — new M/S and FX command handlers
+- `state.ms` object added: `{ width: {vocals,melody,bass,drums}, pan: {vocals,melody,bass,drums}, fxSend, fxReturn }`.
+- New TUI commands: `:width <stem> <0–1>`, `:pan <stem> <-1–+1>`, `:fxSend <0–1>`, `:fxReturn <0–1>`, `:fxStereo 0|1`, `:analysisMode on|off`.
+- `Max.addHandler('stemMS', ...)` — receives `stemMS track pan width` from slicer outlet 1; forwards to ms_router and broadcasts `{ type:'param', key:'stemMS', track, pan, width }` to TUI.
+
+#### `slicer.js` — per-slice pan/width emission
+- `buildIndex()` now reads `pan` and `width` from each slice dict (written by `add_stereo_features.py`). Defaults: `pan=0`, `width=0.5`.
+- `selectSegment()` emits `outlet(1, "stemMS", track, startSlice.pan, startSlice.width)` after picking a start slice, in both the normal and loop paths.
+
+#### New file: `add_stereo_features.py`
+- Offline post-processor. Reads `analysis_library.json`, computes per-slice `pan` and `width` from audio, writes them back.
+- **WIDTH** from stem M/S ratio: `rms_S / rms_M` per slice window, min-max normalized to `[0.05, 0.90]` within each stem. Demucs stems are near-mono (raw width 0.025–0.341); normalization preserves relative variation.
+- **PAN** from original mix L-R energy balance: `(pwr_R − pwr_L) / (pwr_R + pwr_L)` at the same time window, scaled by `PAN_SCALE=0.6`. Follows the producer's stereo intent, not the near-mono stem signal.
+- Falls back to stem for pan if original mix file not found. `--stems-only` flag forces stem-based pan.
+- Usage: `python3 add_stereo_features.py` (all tracks) or `python3 add_stereo_features.py "DREPTO"` (filter).
+
+#### Signal chain (complete)
+```
+karma~ → pfft~ → *~0.7 ──┬── mono sum → *~ fxSend → selector~ → dac~ 3 4 → pedal
+                           │          (stereo alt: master L/R post-M/S → selector~)
+               Haas→M/S→pan            adc~ 3 (L, direct) + selector~(adc~3|adc~4) → R
+                           ↓
+                  +~ sum (4 stems) → master L/R → *~(1−fxSend) [dry crossfade]
+                                                     ↓
+                                    +~ ← *~ fxReturn [FX return L/R]
+                                                     ↓
+                                                 dac~ 1 2
+```
+
+---
+
+## 0.1.6 — 2026-06-23
+
+### Meter flood fix (gate pattern)
+- **Root cause confirmed** — "Node script not ready can't handle message meter" is fired by Max's C++ runtime before any JavaScript executes. `peakamp~ 4096` auto-fires at ~10.8 Hz per stem (~54 msg/s total) immediately on patch load; Node.js takes 1–3 s to init. No JS-side handler can prevent this.
+- **Fix: patch-side gate** — added `gate 1` (obj-7013) in `ebys-analyze.maxpat` between the 5 prepend objects (obj-7008–7012) and node.script (obj-4030). Gate defaults closed (0). On patch load all meter messages are silently blocked.
+- **Gate-open signal** — node.script outlet 0 → `sel ws_ready` (obj-7014) → bang on match → message `1` (obj-7015) → gate inlet 0. The `ws_ready` outlet call already existed in `ws_server.js` `server.listen` callback; no JS changes needed.
+- **Dead handlers removed** — `ws_server.js`: removed no-op early `meter` handler (couldn't prevent C++ errors) and a duplicate `meter` handler silently overwritten by the active one.
+- **3 missed direct wires caught** — initial gate edit only re-routed the 5 new prepend objects (obj-7008–7012). A pre-existing `prepend meter` (obj-5008), `prepend analysisDone` (obj-6002), and `prepend streamUpdated` (obj-9922) were still wired directly to node.script and causing the continued flood. All three now route through the same gate. Total: 8 message sources gated, 5 control-only sources (script start/stop/state, slicer.js outlet 1) left direct.
+
+---
+
+## 0.1.5 — 2026-06-22
+
+### Defaults
+- **`DEFAULTS.md` created** — documents all factory defaults with commands and notes
+- **`STAY_PROB`** changed from `0.0` → `0.5` (coin-flip stay/move per stem)
+- **`MATCH_PROB`** changed from `0.0` → `0.9` for all descriptors (strong spectral continuity: always picks the nearest neighbor, but never the same slice — variety comes from STAY_PROB moving between source tracks, not from randomizing the match)
+- **`MAX_SLICES_PER_STEM`** changed from `0` (unlimited) → `200` (performance cap for large libraries)
+
+### VU meters
+- **`meter` flood fix** — Max was sending `meter` messages from a beat-detection metro before ws_server's Node script was ready; no handler existed so Max logged "can't handle message meter" thousands of times. Added a `meter` handler that silently discards 0-arg beat ticks and broadcasts 2-arg VU data (`meter <name> <level>`) as `{type:'vu'}` WebSocket messages
+- **Per-stem VU bars** — new 12-char bar appended to the right of each stem's progress bar line. Green (below -12 dB), yellow (-12 to -3 dB), red (above -3 dB). Driven by `peakamp~` in Max via `meter <stem> <0–1>`. `barW` reduced by `VU_W + 1` (13 chars) to keep total width constant
+- **Master VU bar** — `out: ████████████` shown in the EBYS header line, driven by `meter master <0–1>`
+- **Max wiring done** — `ebys-analyze.maxpat`: 10 new objects (obj-7001–7005 peakamp~, obj-7008–7012 prepend). Taps: `*~0.7` outlet per stem (post-volume) and `+~` final sum outlet (master). 10 patchlines: audio→peakamp~, peakamp~→prepend, prepend→node.script.
+- **`metro` + `loadbang` removed** — first wiring attempt incorrectly used `loadbang → metro 50 → peakamp~ inlet 1`. `peakamp~` has only one inlet (audio signal); inlet 1 does not accept message-rate bangs. Also, the metro started at patch open before `node.script` booted, causing the "Node script not ready can't handle message meter" flood. Both wiring error and flood fixed by removing metro/loadbang: `peakamp~ 4096` auto-outputs peak amplitude every 4096 samples (~93 ms) with no external trigger needed.
+- **VU dot style** — `vuBar()` changed from `█/░` blocks to `●/○` dots (filled/empty circles). Color zones unchanged: green (0–-12 dB), yellow (-12–-3 dB), red (above -3 dB).
+
+### Multi-track display + progress fixes
+- **Track name fix** — `outlet(1, "stemTrack", track, cleanTrackName(track))` was passing the STEM TYPE ("vocals") to `cleanTrackName`, which reads `meta["vocals"].track_name` — the last track loaded during `buildIndex` (alphabetically last = DREPTO CE3o always). Fixed to `startSlice.sourceTrack` which is the name of the actually playing source track
+- **Slice ID collision fix** — slice IDs from the analysis library are per-track integers (0, 1, 2…). Two different source tracks can both have slice id "0", making the TUI's new-slice check (`msg.id !== state.stems[name].id`) fail when switching tracks → `stemSliceStartTime` never resets → progress bar frozen at 0. Fixed by prefixing with source track: `startSlice.sourceTrack + ":" + startSlice.id`
+- **`segDurMs` threading** — `ws_server.js` `melody/bass/drums` handlers were only capturing `(slot, startFrac)`, silently dropping `segDurMs`. TUI was recomputing from BPM, which gives wrong values when `state.beats.bpm` is stale or inaccurate. Now all 4 stem handlers capture the full 5-arg signature and store `segDurMs` in state. TUI `sliceBar()` uses `s.segDurMs` directly (BPM formula as fallback only)
+
+### Max / slicer.js — stuck-loop fixes
+- **`STAY_PROB` advance fix** — when STAY_PROB triggered, `startIdx` was reset to `lastIdx[track]` (exact same slice), causing infinite repetition. Fixed: now finds the earliest slice on the same source track whose `time >= lastEndFrac`. Falls back to any slice on that track if none found after. New tracking vars: `lastEndFrac` (end fraction of previous segment) and `lastSourceTrack` (source track name). Both reset in `reset()`
+- **`MATCH_PROB` stays `0.9`** — high match picks the spectrally nearest neighbor but never the exact same slice. Variety comes from STAY_PROB (50% chance to move source track each cycle), not from lowering match strength.
+
+### Max / slicer.js
+- **`sourceNames is not defined` fix** — `start()` was iterating a local variable that only existed inside `buildIndex()`. Fixed by iterating `slotMap` (module-level `{ trackName → slot }` dict), sorted by slot value
+- **Unequal segment duration fix (accumulated overshoot)** — `snapSegDurMs` was rounding the *accumulated* slice duration to the nearest bar, causing overshoot when a single long slice (e.g. 15 s bass) made the segment snap to 8 bars (16 000 ms) instead of the target 4 bars (8 000 ms). Fixed by using `SEGMENT_BARS[track] * barMs` exactly as the timer value
+- **Unequal segment duration fix (cross-track BPM)** — when different stems chose source tracks with different analyzed BPMs, per-track `barMs` gave different `snapSegDurMs` values and stems fired out of sync. Timer now always uses `GLOBAL_BPM` (or `FALLBACK_BPM` when no override) so all four stems always fire at the same interval: `SEGMENT_BARS × (60 000 / globalBPM × 4)`. `stretchRatio` continues to compensate for per-track BPM inside karma~
+
+### Max / slot_router.js
+- **`karma~: doesn't understand "int"` fix** — `1.0 / 1.0 = 1` in JS has no fractional part; Max sends it as an int atom, which karma~'s speed inlet rejects. Fixed by adding `1e-9` epsilon (`speedFloat = speedFactor + 1e-9`) to guarantee a fractional part → float atom. The ~0.00000009% pitch difference is inaudible
+- **Pitch ratio sent on every play command** — previously `stemPitch[stem]` was only sent on explicit `:pitchShift`. Now `outlet(PITCH_OUT[stem], stemPitch[stem])` fires on every `routeStem()` call so gizmo~ always has a valid ratio (default 1.0 = pass-through) even before any pitch command is issued
+- **`stop()` handler** — sends `"stop"` to all four karma~ inlet 0 outlets (0, 3, 6, 9) when `:stop` is received. Called by `buffer_manager.js` forwarding `outlet(12, "stop")` via the existing wire
+
+### Max / buffer_manager.js
+- **Cross-track load race condition fix** — when slicer switched source tracks, `handlePlay` was calling `loadSrc` even while another track was already loading into the staging buffer. This corrupted `s.contents[staging]` before the previous `fluid.bufcompose~` completed, leaving the stem silent or stuck. Fixed: `handlePlay` always writes `pendingCompose` first; only calls `loadSrc` when `s.loading === false`. When a load completes, `src_done` uses `findSrc` to check both buffers — if the wrong track arrived (different source track than `pendingCompose.sourceSlot`), it immediately calls `loadSrc` for the correct track and leaves `pendingCompose` set until the right buffer is ready.
+- **`playing` gate** — new module-level flag (default `false`). Set to `true` at the top of `handlePlay()`. Checked in `ring_done` before `outlet(12, ...)` — in-flight `fluid.bufcompose~` copies that complete after `:stop` are now discarded instead of restarting karma~
+- **`stop()` handler** — sets `playing = false` and forwards `outlet(12, "stop")` to slot_router so karma~ objects are halted immediately
+
+### Max / ebys-pitch.maxpat
+- **FFT imaginary path fix (silence through pitch shifter)** — the two imaginary signal wires were entirely missing from the pfft~ subpatch. Added: `fftin~ outlet 1 → gizmo~ inlet 1` and `gizmo~ outlet 1 → fftout~ inlet 1`. Without the imaginary component, FFT reconstruction is impossible and gizmo~ outputs silence regardless of pitch ratio
+
+### TUI / sdj-tui.js
+- **Version bump** — title and header updated to `EBYS 0.1.5`
+- **Progress bar coordinate-system fix** — bars were filling only in the last seconds of each slice because `s.pos` (karma~ ring buffer 0→1) was being compared against `sliceStart/sliceEnd` (fractions of the *full stem buffer*) — different coordinate systems. Rewrote `sliceBar()` to use wall-clock elapsed time (`Date.now() - stemSliceStartTime[name]`) instead. Progress is now accurate for the full 8 000 ms window
+- **`stemSliceStartTime` tracking** — records `Date.now()` whenever a new slice id arrives on a stem; `sliceBar()` reads this to compute elapsed time
+- **Progress bar bracket width fix** — bracket width was based on the actual audio length in the ring buffer (e.g. 15 s for bass) not the timer duration (8 s). Fixed by using `segDurMs / stemDurMs` so all four brackets are the same width
+- **`playbackStopped` flag** — set `true` on `:stop`, cleared on `:start`. `sliceBar()` reads this flag and suppresses the wall-clock timer, freezing the cursor at position 0 instead of continuing to animate after audio stops
+
+---
+
 ## 0.1.4 — 2026-06-19
 
 ### Max / slicer.js

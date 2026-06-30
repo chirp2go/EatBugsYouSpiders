@@ -44,11 +44,17 @@ There is also a deeper analogy: the system itself behaves like proteins — slic
 
 ---
 
-## Crypto Token
+## CRKT Token — Cricket Protein Powder Cooperative
 
-The token is speculative by design. It launches before the community is fully formed — and grows as the community does. Artists submitting tracks, listeners tipping mixes, the radio running — the token reflects that activity, not a promise.
+CRKT is a membership share in the Cricket Protein Powder Cooperative. Artists and DJs earn CRKT through tips. Holding CRKT entitles members to a proportional share of cooperative profits, distributed monthly from powder sales.
 
-No artificial backing, no promises about utility. The value comes from what the radio becomes — the listeners, the artists who submit, the people who care enough to tip. The token is a stake in that, before it's fully legible. TRDGA is tied to the EBYS radio economy specifically — not the full network of EBYS users, which is decentralized and unknowable by design.
+The music generates the stake. The powder generates the income.
+
+DJs perform with EBYS, curate mixes, earn CRKT, and implicitly promote the cooperative — the brand is inseparable from the instrument. Artists submit tracks, get tipped, earn CRKT, and receive monthly income from powder sales without ever thinking about powder. EBYS holds a founding stake and earns alongside all members.
+
+No one applies to join. Participation is the membership act.
+
+See TOKEN.md for the full mechanics. See CRICKET_POWD_LAB_MEAT.md for the cooperative structure.
 
 ---
 
