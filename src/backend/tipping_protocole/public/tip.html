@@ -3,6 +3,12 @@
 <head>
   <title>EBYS Tip</title>
   <script src="https://js.stripe.com/v3/"></script>
+  <style>
+    body { font-family: monospace; max-width: 400px; margin: 40px auto; }
+    #payment-element { margin: 20px 0; }
+    button { padding: 10px 20px; cursor: pointer; }
+    #status { margin-top: 10px; color: red; }
+  </style>
 </head>
 <body>
   <h2>Tip the DJ</h2>
@@ -12,20 +18,24 @@
     <option value="500">$5</option>
     <option value="1000">$10</option>
   </select>
+  <button onclick="initPayment()">Load payment form</button>
 
-  <button onclick="tip()">Tip</button>
+  <form id="payment-form" style="display:none">
+    <div id="payment-element"></div>
+    <button type="submit">Pay</button>
+  </form>
 
   <div id="status"></div>
 
   <script>
     const stripe = Stripe('pk_test_51ToCWNDvb63j4x6ODcTRNKuxFZGM70R10swnVX6Xtj0qJSwnN0BY6rLqOqgl3SYC7C6WcjNgbNXxkUElxPoX02TL006YrCt7V6')
-    const SESSION_ID = 1  // hardcoded for test
+    const SESSION_ID = 1
+    let elements
 
-    async function tip() {
+    async function initPayment() {
       const amountCents = parseInt(document.getElementById('amount').value)
-      document.getElementById('status').innerText = 'Creating payment...'
+      document.getElementById('status').innerText = 'Loading...'
 
-      // Step 1 — create payment intent on backend
       const res = await fetch('https://eatbugsyouspider.com/tips/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -33,18 +43,27 @@
       })
       const { clientSecret } = await res.json()
 
-      // Step 2 — confirm payment with Stripe
+      elements = stripe.elements({ clientSecret })
+      const paymentElement = elements.create('payment')
+      paymentElement.mount('#payment-element')
+
+      document.getElementById('payment-form').style.display = 'block'
+      document.getElementById('status').innerText = ''
+    }
+
+    document.getElementById('payment-form').addEventListener('submit', async (e) => {
+      e.preventDefault()
+      document.getElementById('status').innerText = 'Processing...'
+
       const { error } = await stripe.confirmPayment({
-        clientSecret,
-        confirmParams: {
-          return_url: 'https://eatbugsyouspider.com'
-        }
+        elements,
+        confirmParams: { return_url: 'https://eatbugsyouspider.com' }
       })
 
       if (error) {
         document.getElementById('status').innerText = error.message
       }
-    }
+    })
   </script>
 </body>
 </html>
