@@ -5,6 +5,7 @@ const app = express()
 // Stripe webhooks need raw body — must come before express.json()
 app.use('/tips/webhook', express.raw({ type: 'application/json' }))
 app.use(express.json())
+app.use(express.static('public'))
 
 const tipsRouter     = require('./routes/tips')
 const slicesRouter   = require('./routes/slices')
